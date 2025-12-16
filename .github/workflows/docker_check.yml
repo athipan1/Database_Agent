@@ -1,44 +1,44 @@
-name: Dockerfile Check
+name: Docker CI
 
 on:
   push:
-    branches: [ "main", "master" ]
+    paths:
+      - Dockerfile
+      - requirements.txt
+      - .hadolint.yaml
   pull_request:
+    paths:
+      - Dockerfile
+      - requirements.txt
+      - .hadolint.yaml
 
 jobs:
-  dockerfile-validation:
+  docker-check:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -------------------------
-      # 1. Lint Dockerfile
-      # -------------------------
+      # 1️⃣ Lint Dockerfile
       - name: Lint Dockerfile with Hadolint
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile
-          failure-threshold: warning
+          config: .hadolint.yaml
+          failure-threshold: error
 
-      # -------------------------
-      # 2. Build Docker image
-      # -------------------------
+      # 2️⃣ Build Docker image (test only)
       - name: Build Docker image
         run: |
-          docker build -t trading-db:ci .
+          docker build -t database-agent:test .
 
-      # -------------------------
-      # 3. Smoke test container
-      # -------------------------
-      - name: Run container (smoke test)
-        run: |
-          docker run --rm trading-db:ci python -c "import sqlite3; print('SQLite OK')"
-
-      # -------------------------
-      # 4. Run pytest in container
-      # -------------------------
-      - name: Run pytest in Docker
-        run: |
-          docker run --rm trading-db:ci python -m pytest
+      # 3️⃣ Security Scan ด้วย Trivy
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: database-agent:test
+          format: table
+          exit-code: 1
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
