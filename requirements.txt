@@ -1,0 +1,12 @@
+# Core
+flask
+fastapi
+uvicorn
+
+# Data
+sqlalchemy
+pydantic
+
+# Utils
+python-dotenv
+requests
