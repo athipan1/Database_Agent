@@ -10,5 +10,6 @@ pydantic
 # Utils
 python-dotenv
 requests
+
 # Testing
 pytest
