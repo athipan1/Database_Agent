@@ -1,24 +1,16 @@
-# syntax=docker/dockerfile:1
-FROM python:3.9.25-slim
+# ใช้ official Python image
+FROM python:3.9-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+# กำหนด working directory ใน container
+WORKDIR /code
 
-WORKDIR /app
+# Copy ไฟล์ requirements.txt และติดตั้ง dependencies
+COPY ./requirements.txt /code/requirements.txt
+RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
 
-# ---- System dependencies ----
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# Copy โค้ดทั้งหมดในโปรเจกต์เข้าไปใน container
+COPY . /code/
 
-# ---- Python dependencies ----
-COPY requirements.txt .
-
-RUN python -m pip install --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
-
-# ---- App source ----
-COPY . .
-
-CMD ["python", "main.py"]
+# กำหนด Command ที่จะรันเมื่อ container เริ่มทำงาน
+# รัน API server ด้วย Uvicorn บน port 8003
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8003"]
