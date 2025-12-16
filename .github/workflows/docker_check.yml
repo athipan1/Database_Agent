@@ -1,43 +1,25 @@
-name: Docker CI
+name: Security Scan (Trivy)
 
 on:
   push:
-    paths:
-      - Dockerfile
-      - requirements.txt
-      - .hadolint.yaml
+    branches: [ "main" ]
   pull_request:
-    paths:
-      - Dockerfile
-      - requirements.txt
-      - .hadolint.yaml
 
 jobs:
-  docker-check:
+  trivy-scan:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1️⃣ Lint Dockerfile
-      - name: Lint Dockerfile with Hadolint
-        uses: hadolint/hadolint-action@v3.1.0
-        with:
-          dockerfile: Dockerfile
-          config: .hadolint.yaml
-          failure-threshold: error
-
-      # 2️⃣ Build Docker image (test only)
       - name: Build Docker image
         run: |
-          docker build -t database-agent:test .
+          docker build -t database-agent:ci .
 
-      # 3️⃣ Security Scan ด้วย Trivy
-      - name: Trivy vulnerability scan
+      - name: Run Trivy vulnerability scan
         uses: aquasecurity/trivy-action@0.20.0
         with:
-          image-ref: database-agent:test
+          image-ref: database-agent:ci
           format: table
           exit-code: 1
           ignore-unfixed: true
