@@ -1,25 +1,24 @@
-# -------- Base Image --------
-FROM python:3.9-slim
+# syntax=docker/dockerfile:1
+FROM python:3.9.25-slim
 
-# -------- Environment --------
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# -------- Workdir --------
 WORKDIR /app
 
-# -------- System deps (optional แต่แนะนำ) --------
-RUN apt-get update && apt-get install -y \
-    build-essential \
+# ---- System dependencies ----
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# -------- Python deps --------
+# ---- Python dependencies ----
 COPY requirements.txt .
-RUN pip install --upgrade pip \
+
+RUN python -m pip install --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-# -------- App source --------
+# ---- App source ----
 COPY . .
 
-# -------- Default command --------
-CMD ["python", "trading_db.py"]
+CMD ["python", "main.py"]
