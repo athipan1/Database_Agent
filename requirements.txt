@@ -1,15 +1,6 @@
-# Core
-flask
+# Added for API
 fastapi
-uvicorn
-
-# Data
-sqlalchemy
-pydantic
-
-# Utils
+uvicorn[standard]
 python-dotenv
-requests
-
-# Testing
 pytest
+pydantic
