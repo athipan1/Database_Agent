@@ -1,0 +1,13 @@
+INFO:     Started server process [3818]
+INFO:     Waiting for application startup.
+2025-12-16 02:14:22,894 - INFO - Successfully connected to database: trade_manager.db
+2025-12-16 02:14:22,895 - INFO - Table 'accounts' created or already exists.
+2025-12-16 02:14:22,895 - INFO - Table 'positions' created or already exists.
+2025-12-16 02:14:22,896 - INFO - Table 'orders' created or already exists.
+2025-12-16 02:14:22,896 - INFO - Database setup completed successfully.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2025-12-16 02:14:30,252 - INFO - Created pending BUY order for 10 AAPL @ 150.0. Order ID: 1
+2025-12-16 02:14:30,253 - INFO - Executing BUY order 1 for 10 AAPL @ 150.0
+2025-12-16 02:14:30,253 - INFO - Order 1 status updated to 'executed'.
+INFO:     127.0.0.1:39854 - "POST /analyze HTTP/1.1" 200 OK
