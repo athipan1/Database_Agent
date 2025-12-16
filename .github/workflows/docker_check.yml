@@ -1,0 +1,44 @@
+name: Dockerfile Check
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+
+jobs:
+  dockerfile-validation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # -------------------------
+      # 1. Lint Dockerfile
+      # -------------------------
+      - name: Lint Dockerfile with Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+      # -------------------------
+      # 2. Build Docker image
+      # -------------------------
+      - name: Build Docker image
+        run: |
+          docker build -t trading-db:ci .
+
+      # -------------------------
+      # 3. Smoke test container
+      # -------------------------
+      - name: Run container (smoke test)
+        run: |
+          docker run --rm trading-db:ci python -c "import sqlite3; print('SQLite OK')"
+
+      # -------------------------
+      # 4. Run pytest in container
+      # -------------------------
+      - name: Run pytest in Docker
+        run: |
+          docker run --rm trading-db:ci python -m pytest
