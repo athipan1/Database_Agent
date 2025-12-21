@@ -1,28 +1,36 @@
-import sqlite3
+import os
 import logging
-from datetime import datetime
+import psycopg2
+import psycopg2.extras
+from decimal import Decimal
+from typing import Optional, Dict, Any, List
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class TradingDB:
     """
-    A class to manage the SQLite database for the trading robot.
-    It handles database connection, schema creation, and all trading operations.
+    A class to manage the PostgreSQL database for the trading robot.
+    It handles database connection, schema creation, and all trading operations
+    with a strong focus on transaction safety and data integrity.
     """
-    def __init__(self, db_file="trading.db"):
+    def __init__(self):
         """
-        Initializes the TradingDB object and connects to the SQLite database.
-
-        :param db_file: The path to the SQLite database file.
+        Initializes the TradingDB object and connects to the PostgreSQL database
+        using credentials from environment variables.
         """
         self.conn = None
         try:
-            self.conn = sqlite3.connect(db_file, check_same_thread=False)
-            self.conn.row_factory = sqlite3.Row # Allows accessing columns by name
-            logging.info(f"Successfully connected to database: {db_file}")
-        except sqlite3.Error as e:
-            logging.error(f"Error connecting to database: {e}")
+            self.conn = psycopg2.connect(
+                dbname=os.environ.get("POSTGRES_DB"),
+                user=os.environ.get("POSTGRES_USER"),
+                password=os.environ.get("POSTGRES_PASSWORD"),
+                host=os.environ.get("POSTGRES_HOST"),
+                port=os.environ.get("POSTGRES_PORT")
+            )
+            logging.info(f"Successfully connected to PostgreSQL database: {os.environ.get('POSTGRES_DB')}")
+        except psycopg2.OperationalError as e:
+            logging.error(f"Error connecting to PostgreSQL database: {e}")
             raise e
 
     def __del__(self):
@@ -34,111 +42,144 @@ class TradingDB:
             logging.info("Database connection closed.")
 
     def get_cursor(self):
-        """Returns a cursor object."""
-        return self.conn.cursor()
+        """Returns a dictionary cursor object."""
+        return self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
     def setup_database(self):
         """
         Creates the necessary tables if they don't exist and initializes
-        the default account.
+        the default account. This function is idempotent.
         """
         cursor = self.get_cursor()
         try:
-            # Create accounts table
+            # Create accounts table with NUMERIC for financial data
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS accounts (
-                    account_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id SERIAL PRIMARY KEY,
                     account_name TEXT NOT NULL UNIQUE,
-                    cash_balance REAL NOT NULL
+                    cash_balance NUMERIC(18, 5) NOT NULL
                 );
             """)
             logging.info("Table 'accounts' created or already exists.")
 
-            # Create positions table
+            # Create positions table with NUMERIC for financial data
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS positions (
-                    position_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    account_id INTEGER NOT NULL,
+                    position_id SERIAL PRIMARY KEY,
+                    account_id INTEGER NOT NULL REFERENCES accounts(account_id),
                     symbol TEXT NOT NULL,
-                    quantity INTEGER NOT NULL,
-                    average_cost REAL NOT NULL,
-                    FOREIGN KEY (account_id) REFERENCES accounts (account_id),
+                    quantity BIGINT NOT NULL,
+                    average_cost NUMERIC(18, 5) NOT NULL,
                     UNIQUE (account_id, symbol)
                 );
             """)
             logging.info("Table 'positions' created or already exists.")
 
-            # Create orders table
+            # Create orders table with NUMERIC, UUID for idempotency, and failure reason
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS orders (
-                    order_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    account_id INTEGER NOT NULL,
+                    order_id SERIAL PRIMARY KEY,
+                    client_order_id UUID NOT NULL UNIQUE,
+                    account_id INTEGER NOT NULL REFERENCES accounts(account_id),
                     symbol TEXT NOT NULL,
                     order_type TEXT NOT NULL CHECK(order_type IN ('BUY', 'SELL')),
-                    quantity INTEGER NOT NULL,
-                    price REAL,
+                    quantity BIGINT NOT NULL,
+                    price NUMERIC(18, 5),
                     status TEXT NOT NULL CHECK(status IN ('pending', 'executed', 'cancelled', 'failed')),
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (account_id) REFERENCES accounts (account_id)
+                    failure_reason TEXT,
+                    timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
                 );
             """)
             logging.info("Table 'orders' created or already exists.")
 
+            # Create ledger table for full auditability (double-entry bookkeeping)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ledger (
+                    entry_id SERIAL PRIMARY KEY,
+                    account_id INTEGER NOT NULL REFERENCES accounts(account_id),
+                    order_id INTEGER REFERENCES orders(order_id),
+                    asset TEXT NOT NULL, -- 'CASH' or a stock symbol like 'AAPL'
+                    change NUMERIC(18, 5) NOT NULL, -- Positive for credit, negative for debit
+                    new_balance NUMERIC(18, 5) NOT NULL,
+                    timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    description TEXT
+                );
+            """)
+            logging.info("Table 'ledger' created or already exists.")
+
             # Create a default account if it doesn't exist
-            cursor.execute("SELECT * FROM accounts WHERE account_name = ?", ('main_account',))
+            cursor.execute("SELECT * FROM accounts WHERE account_name = %s", ('main_account',))
             if cursor.fetchone() is None:
-                cursor.execute("INSERT INTO accounts (account_name, cash_balance) VALUES (?, ?)",
-                               ('main_account', 1000000.0))
-                logging.info("Created default 'main_account' with 1,000,000 cash balance.")
+                initial_balance = Decimal('1000000.00')
+                cursor.execute(
+                    "INSERT INTO accounts (account_name, cash_balance) VALUES (%s, %s) RETURNING account_id",
+                    ('main_account', initial_balance)
+                )
+                account_id = cursor.fetchone()['account_id']
+                # Initial funding ledger entry
+                cursor.execute("""
+                    INSERT INTO ledger (account_id, asset, change, new_balance, description)
+                    VALUES (%s, 'CASH', %s, %s, 'Initial account funding')
+                """, (account_id, initial_balance, initial_balance))
+                logging.info(f"Created default 'main_account' (ID: {account_id}) with {initial_balance} cash balance.")
 
             self.conn.commit()
             logging.info("Database setup completed successfully.")
-        except sqlite3.Error as e:
+        except Exception as e:
             logging.error(f"Error setting up database: {e}")
             self.conn.rollback()
             raise e
+        finally:
+            cursor.close()
 
-    def create_order(self, account_id, symbol, order_type, quantity, price):
+    def create_order(self, account_id: int, client_order_id: str, symbol: str, order_type: str, quantity: int, price: Decimal) -> Optional[int]:
         """
         Creates a new order with 'pending' status.
-
-        :param account_id: The ID of the account placing the order.
-        :param symbol: The stock symbol (e.g., 'AAPL').
-        :param order_type: 'BUY' or 'SELL'.
-        :param quantity: The number of shares.
-        :param price: The price per share.
         :return: The ID of the newly created order, or None on failure.
         """
         cursor = self.get_cursor()
         try:
             cursor.execute("""
-                INSERT INTO orders (account_id, symbol, order_type, quantity, price, status)
-                VALUES (?, ?, ?, ?, ?, 'pending')
-            """, (account_id, symbol.upper(), order_type.upper(), quantity, price))
+                INSERT INTO orders (account_id, client_order_id, symbol, order_type, quantity, price, status)
+                VALUES (%s, %s, %s, %s, %s, %s, 'pending')
+                RETURNING order_id
+            """, (account_id, client_order_id, symbol.upper(), order_type.upper(), quantity, price))
+            order_id = cursor.fetchone()['order_id']
             self.conn.commit()
-            order_id = cursor.lastrowid
             logging.info(f"Created pending {order_type} order for {quantity} {symbol} @ {price}. Order ID: {order_id}")
             return order_id
-        except sqlite3.Error as e:
+        except psycopg2.errors.UniqueViolation:
+            self.conn.rollback()
+            logging.warning(f"Attempted to create an order with a duplicate client_order_id: {client_order_id}")
+            # Optionally, find and return the existing order_id
+            cursor.execute("SELECT order_id FROM orders WHERE client_order_id = %s", (client_order_id,))
+            existing = cursor.fetchone()
+            return existing['order_id'] if existing else None
+        except Exception as e:
             logging.error(f"Failed to create order: {e}")
             self.conn.rollback()
             return None
+        finally:
+            cursor.close()
 
-    def execute_order(self, order_id):
+    def execute_order(self, order_id: int):
         """
-        Executes a pending order, updating account balance and positions.
-        This operation is transactional.
-
-        :param order_id: The ID of the order to execute.
+        Executes a pending order within a single atomic transaction.
+        Updates account balance, positions, ledger, and the order itself.
+        Uses pessimistic locking ('SELECT FOR UPDATE') to prevent race conditions.
         """
         cursor = self.get_cursor()
         try:
-            # Fetch the order
-            cursor.execute("SELECT * FROM orders WHERE order_id = ? AND status = 'pending'", (order_id,))
+            # --- Start Atomic Transaction ---
+            cursor.execute("BEGIN;")
+
+            # 1. Lock and fetch the order to ensure it's pending and not being processed elsewhere
+            cursor.execute("SELECT * FROM orders WHERE order_id = %s AND status = 'pending' FOR UPDATE", (order_id,))
             order = cursor.fetchone()
 
             if not order:
                 logging.warning(f"Order {order_id} not found or not pending. Cannot execute.")
+                self.conn.rollback() # Rollback is safe even if nothing happened
                 return
 
             account_id = order['account_id']
@@ -150,224 +191,152 @@ class TradingDB:
 
             logging.info(f"Executing {order_type} order {order_id} for {quantity} {symbol} @ {price}")
 
-            # --- Start Transaction ---
-            self.conn.execute('BEGIN')
-
-            # Get account balance
-            cursor.execute("SELECT cash_balance FROM accounts WHERE account_id = ?", (account_id,))
+            # 2. Lock and fetch the account to ensure funds/positions are not changed by another transaction
+            cursor.execute("SELECT account_id, cash_balance FROM accounts WHERE account_id = %s FOR UPDATE", (account_id,))
             account = cursor.fetchone()
-            cash_balance = account['cash_balance']
+
+            if not account:
+                # This should not happen if foreign keys are set up correctly
+                raise Exception(f"Account {account_id} not found for order {order_id}")
+
 
             if order_type == 'BUY':
-                if cash_balance < total_cost:
-                    self._update_order_status(cursor, order_id, 'failed', "Insufficient funds")
+                if account['cash_balance'] < total_cost:
+                    self._update_order_status_in_txn(cursor, order_id, 'failed', "Insufficient funds")
                 else:
-                    # Update account balance
-                    new_balance = cash_balance - total_cost
-                    cursor.execute("UPDATE accounts SET cash_balance = ? WHERE account_id = ?", (new_balance, account_id))
-
-                    # Update position
-                    self._update_position_on_buy(cursor, account_id, symbol, quantity, price)
-
-                    # Update order status
-                    self._update_order_status(cursor, order_id, 'executed')
+                    new_balance = account['cash_balance'] - total_cost
+                    self._update_balance_in_txn(cursor, account_id, new_balance, order_id, -total_cost, f"BUY {quantity} {symbol}")
+                    self._update_position_and_ledger_on_buy_in_txn(cursor, account_id, symbol, quantity, price, order_id)
+                    self._update_order_status_in_txn(cursor, order_id, 'executed')
 
             elif order_type == 'SELL':
-                # Get current position
-                cursor.execute("SELECT * FROM positions WHERE account_id = ? AND symbol = ?", (account_id, symbol))
+                cursor.execute("SELECT * FROM positions WHERE account_id = %s AND symbol = %s FOR UPDATE", (account_id, symbol))
                 position = cursor.fetchone()
 
                 if not position or position['quantity'] < quantity:
-                    self._update_order_status(cursor, order_id, 'failed', "Insufficient shares to sell")
+                    self._update_order_status_in_txn(cursor, order_id, 'failed', "Insufficient shares to sell")
                 else:
-                    # Update account balance
-                    new_balance = cash_balance + total_cost
-                    cursor.execute("UPDATE accounts SET cash_balance = ? WHERE account_id = ?", (new_balance, account_id))
+                    new_balance = account['cash_balance'] + total_cost
+                    self._update_balance_in_txn(cursor, account_id, new_balance, order_id, total_cost, f"SELL {quantity} {symbol}")
+                    self._update_position_and_ledger_on_sell_in_txn(cursor, position, quantity, order_id)
+                    self._update_order_status_in_txn(cursor, order_id, 'executed')
 
-                    # Update position
-                    self._update_position_on_sell(cursor, position, quantity)
-
-                    # Update order status
-                    self._update_order_status(cursor, order_id, 'executed')
-
+            # --- Commit Transaction ---
             self.conn.commit()
-            # --- End Transaction ---
+            logging.info(f"Transaction for order {order_id} committed successfully.")
 
-        except sqlite3.Error as e:
-            logging.error(f"Failed to execute order {order_id}: {e}")
+        except Exception as e:
+            logging.error(f"Failed to execute order {order_id}: {e}. Rolling back transaction.")
             self.conn.rollback()
-            self._update_order_status(self.get_cursor(), order_id, 'failed', str(e)) # Try to mark as failed out of transaction
-            self.conn.commit()
+            # We DO NOT try to update status outside the transaction. The order remains 'pending' for review.
+        finally:
+            cursor.close()
 
+    def _update_order_status_in_txn(self, cursor, order_id, status, reason=None):
+        """Helper to update order status within a transaction."""
+        cursor.execute(
+            "UPDATE orders SET status = %s, failure_reason = %s WHERE order_id = %s",
+            (status, reason, order_id)
+        )
+        logging.info(f"Order {order_id} status updated to '{status}' in transaction.")
 
-    def _update_order_status(self, cursor, order_id, status, reason=""):
-        """Helper to update order status and log it."""
-        cursor.execute("UPDATE orders SET status = ? WHERE order_id = ?", (status, order_id))
-        logging.info(f"Order {order_id} status updated to '{status}'. {reason}".strip())
+    def _update_balance_in_txn(self, cursor, account_id, new_balance, order_id, change, description):
+        """Helper to update account balance and create a ledger entry within a transaction."""
+        cursor.execute("UPDATE accounts SET cash_balance = %s WHERE account_id = %s", (new_balance, account_id))
+        cursor.execute("""
+            INSERT INTO ledger (account_id, order_id, asset, change, new_balance, description)
+            VALUES (%s, %s, 'CASH', %s, %s, %s)
+        """, (account_id, order_id, change, new_balance, description))
 
-    def _update_position_on_buy(self, cursor, account_id, symbol, quantity, price):
-        """Helper to update or create a position after a buy."""
-        cursor.execute("SELECT * FROM positions WHERE account_id = ? AND symbol = ?", (account_id, symbol))
+    def _update_position_and_ledger_on_buy_in_txn(self, cursor, account_id, symbol, quantity, price, order_id):
+        """Helper to update/create a position and create ledger entries after a buy."""
+        cursor.execute("SELECT * FROM positions WHERE account_id = %s AND symbol = %s FOR UPDATE", (account_id, symbol))
         position = cursor.fetchone()
 
         if position:
-            # Update existing position
             new_quantity = position['quantity'] + quantity
             new_avg_cost = ((position['average_cost'] * position['quantity']) + (price * quantity)) / new_quantity
-            cursor.execute("""
-                UPDATE positions SET quantity = ?, average_cost = ?
-                WHERE position_id = ?
-            """, (new_quantity, new_avg_cost, position['position_id']))
+            cursor.execute(
+                "UPDATE positions SET quantity = %s, average_cost = %s WHERE position_id = %s",
+                (new_quantity, new_avg_cost, position['position_id'])
+            )
         else:
-            # Create new position
             cursor.execute("""
                 INSERT INTO positions (account_id, symbol, quantity, average_cost)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
             """, (account_id, symbol, quantity, price))
 
-    def _update_position_on_sell(self, cursor, position, sell_quantity):
-        """Helper to update or delete a position after a sell."""
-        if position['quantity'] == sell_quantity:
-            # Delete position if all shares are sold
-            cursor.execute("DELETE FROM positions WHERE position_id = ?", (position['position_id'],))
-        else:
-            # Update quantity for a partial sell
-            new_quantity = position['quantity'] - sell_quantity
-            cursor.execute("UPDATE positions SET quantity = ? WHERE position_id = ?", (new_quantity, position['position_id']))
+        # Ledger entry for the stock
+        cursor.execute("""
+            INSERT INTO ledger (account_id, order_id, asset, change, new_balance, description)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (account_id, order_id, symbol, quantity, new_quantity if position else quantity, f"BUY {quantity} {symbol}"))
 
-    def get_account_balance(self, account_id):
+    def _update_position_and_ledger_on_sell_in_txn(self, cursor, position, sell_quantity, order_id):
+        """Helper to update/delete a position and create ledger entries after a sell."""
+        new_quantity = position['quantity'] - sell_quantity
+        if new_quantity == 0:
+            cursor.execute("DELETE FROM positions WHERE position_id = %s", (position['position_id'],))
+        else:
+            cursor.execute("UPDATE positions SET quantity = %s WHERE position_id = %s", (new_quantity, position['position_id']))
+
+        # Ledger entry for the stock
+        cursor.execute("""
+            INSERT INTO ledger (account_id, order_id, asset, change, new_balance, description)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (position['account_id'], order_id, position['symbol'], -sell_quantity, new_quantity, f"SELL {sell_quantity} {position['symbol']}"))
+
+
+    def get_account_balance(self, account_id: int) -> Optional[Decimal]:
         """
         Retrieves the cash balance for a specific account.
-
         :param account_id: The ID of the account.
-        :return: The cash balance as a float, or None if account not found.
+        :return: The cash balance as a Decimal, or None if account not found.
         """
         cursor = self.get_cursor()
         try:
-            cursor.execute("SELECT cash_balance FROM accounts WHERE account_id = ?", (account_id,))
+            cursor.execute("SELECT cash_balance FROM accounts WHERE account_id = %s", (account_id,))
             result = cursor.fetchone()
             return result['cash_balance'] if result else None
-        except sqlite3.Error as e:
+        except Exception as e:
             logging.error(f"Error getting account balance: {e}")
             return None
+        finally:
+            cursor.close()
 
-    def get_positions(self, account_id):
+    def get_positions(self, account_id: int) -> List[Dict[str, Any]]:
         """
         Retrieves all positions for a specific account.
-
         :param account_id: The ID of the account.
         :return: A list of dictionaries representing the positions.
         """
         cursor = self.get_cursor()
         try:
-            cursor.execute("SELECT symbol, quantity, average_cost FROM positions WHERE account_id = ?", (account_id,))
-            positions = [dict(row) for row in cursor.fetchall()]
-            return positions
-        except sqlite3.Error as e:
+            cursor.execute("SELECT symbol, quantity, average_cost FROM positions WHERE account_id = %s", (account_id,))
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
             logging.error(f"Error getting positions: {e}")
             return []
+        finally:
+            cursor.close()
 
-    def get_order_history(self, account_id):
+    def get_order_history(self, account_id: int) -> List[Dict[str, Any]]:
         """
-        Retrieves the entire order history for a specific account.
-
+        Retriees the entire order history for a specific account.
         :param account_id: The ID of the account.
         :return: A list of dictionaries representing the orders.
         """
         cursor = self.get_cursor()
         try:
             cursor.execute("""
-                SELECT order_id, symbol, order_type, quantity, price, status, timestamp
+                SELECT order_id, client_order_id, symbol, order_type, quantity, price, status, failure_reason, timestamp
                 FROM orders
-                WHERE account_id = ?
+                WHERE account_id = %s
                 ORDER BY timestamp DESC
             """, (account_id,))
-            orders = [dict(row) for row in cursor.fetchall()]
-            return orders
-        except sqlite3.Error as e:
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
             logging.error(f"Error getting order history: {e}")
             return []
-
-if __name__ == '__main__':
-    """
-    An example usage script to demonstrate the functionality of the TradingDB class.
-    This will:
-    1. Create a fresh database file `example.db`.
-    2. Set up the tables and a default account.
-    3. Perform a series of valid and invalid transactions.
-    4. Print the final state of the database.
-    """
-    import os
-    db_file = "example.db"
-    if os.path.exists(db_file):
-        os.remove(db_file) # Start with a clean slate
-        logging.info(f"Removed old database file '{db_file}'.")
-
-    db = TradingDB(db_file=db_file)
-    db.setup_database()
-
-    # The default account_id is 1
-    ACCOUNT_ID = 1
-
-    def print_status():
-        print("\n" + "="*50)
-        balance = db.get_account_balance(ACCOUNT_ID)
-        print(f"Account Balance: ${balance:,.2f}")
-
-        positions = db.get_positions(ACCOUNT_ID)
-        print("Current Positions:")
-        if positions:
-            for p in positions:
-                print(f"  - {p['symbol']}: {p['quantity']} shares @ avg cost ${p['average_cost']:.2f}")
-        else:
-            print("  - No positions held.")
-
-        history = db.get_order_history(ACCOUNT_ID)
-        print("Order History:")
-        if history:
-            for o in history:
-                print(f"  - ID: {o['order_id']}, {o['order_type']} {o['symbol']} {o['quantity']} @ ${o['price']:.2f}, Status: {o['status']}")
-        else:
-            print("  - No order history.")
-        print("="*50 + "\n")
-
-    # --- Start Simulation ---
-    print("--- Initial State ---")
-    print_status()
-
-    # 1. Successful Buy
-    print("\n--- Step 1: Submitting a valid BUY order for 10 AAPL @ $150.00 ---")
-    buy_order_id_1 = db.create_order(ACCOUNT_ID, 'AAPL', 'BUY', 10, 150.00)
-    db.execute_order(buy_order_id_1)
-    print_status()
-
-    # 2. Another successful Buy (updates existing position)
-    print("\n--- Step 2: Submitting another valid BUY order for 5 AAPL @ $160.00 ---")
-    buy_order_id_2 = db.create_order(ACCOUNT_ID, 'AAPL', 'BUY', 5, 160.00)
-    db.execute_order(buy_order_id_2)
-    print("Average cost for AAPL should be updated.")
-    print_status()
-
-    # 3. Successful Sell
-    print("\n--- Step 3: Submitting a valid SELL order for 8 AAPL @ $170.00 ---")
-    sell_order_id_1 = db.create_order(ACCOUNT_ID, 'AAPL', 'SELL', 8, 170.00)
-    db.execute_order(sell_order_id_1)
-    print_status()
-
-    # 4. Failed Buy (Insufficient Funds)
-    print("\n--- Step 4: Submitting a BUY order that should FAIL (insufficient funds) ---")
-    buy_order_id_fail = db.create_order(ACCOUNT_ID, 'GOOG', 'BUY', 100, 99999.99)
-    db.execute_order(buy_order_id_fail)
-    print_status()
-
-    # 5. Failed Sell (Insufficient Shares)
-    print("\n--- Step 5: Submitting a SELL order that should FAIL (insufficient shares) ---")
-    sell_order_id_fail = db.create_order(ACCOUNT_ID, 'AAPL', 'SELL', 100, 200.00) # We only have 7 shares left
-    db.execute_order(sell_order_id_fail)
-    print_status()
-
-    # 6. Buy a different stock
-    print("\n--- Step 6: Submitting a valid BUY order for a new stock (MSFT) ---")
-    buy_msft_id = db.create_order(ACCOUNT_ID, 'MSFT', 'BUY', 20, 300.00)
-    db.execute_order(buy_msft_id)
-    print_status()
+        finally:
+            cursor.close()

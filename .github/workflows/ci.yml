@@ -10,6 +10,22 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_USER: trading_user
+          POSTGRES_PASSWORD: your_strong_password_here
+          POSTGRES_DB: trading_db_test
+        ports:
+          - 5432:5432
+        # Add a health check to wait for PostgreSQL to be ready
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
     - uses: actions/checkout@v3
 
@@ -24,5 +40,11 @@ jobs:
         pip install -r requirements.txt
 
     - name: Test with pytest
+      env:
+        POSTGRES_USER: trading_user
+        POSTGRES_PASSWORD: your_strong_password_here
+        POSTGRES_DB: trading_db_test
+        POSTGRES_HOST: localhost # Because we map the port to the host
+        POSTGRES_PORT: 5432
       run: |
         python3 -m pytest
