@@ -5,12 +5,11 @@ from uuid import uuid4
 import psycopg2.errors
 
 # Set environment variables for testing.
-# In a real CI/CD pipeline, these would be configured in the environment.
-# For local testing, ensure the PostgreSQL container is running.
-os.environ.setdefault("POSTGRES_DB", "trading_db")
+# These will be overridden by the CI environment if set there.
+os.environ.setdefault("POSTGRES_DB", "trading_db_test") # Use a separate test DB
 os.environ.setdefault("POSTGRES_USER", "trading_user")
 os.environ.setdefault("POSTGRES_PASSWORD", "your_strong_password_here")
-os.environ.setdefault("POSTGRES_HOST", "localhost")
+os.environ.setdefault("POSTGRES_HOST", "localhost") # Default for local docker-compose
 os.environ.setdefault("POSTGRES_PORT", "5432")
 
 # This import must come after setting the environment variables
