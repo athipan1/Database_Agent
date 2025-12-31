@@ -2,6 +2,7 @@ import os
 import logging
 import psycopg2
 import psycopg2.extras
+import sqlite3
 from decimal import Decimal
 from typing import Optional, Dict, Any, List
 
@@ -10,28 +11,42 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 class TradingDB:
     """
-    A class to manage the PostgreSQL database for the trading robot.
+    A class to manage the database for the trading robot.
     It handles database connection, schema creation, and all trading operations
     with a strong focus on transaction safety and data integrity.
+    It supports both PostgreSQL and SQLite for flexibility in testing and deployment.
     """
     def __init__(self):
         """
-        Initializes the TradingDB object and connects to the PostgreSQL database
-        using credentials from environment variables.
+        Initializes the TradingDB object and connects to the database.
+        If USE_SQLITE is set in the environment, it uses an in-memory SQLite database.
+        Otherwise, it connects to a PostgreSQL database using environment variables.
         """
         self.conn = None
-        try:
-            self.conn = psycopg2.connect(
-                dbname=os.environ.get("POSTGRES_DB"),
-                user=os.environ.get("POSTGRES_USER"),
-                password=os.environ.get("POSTGRES_PASSWORD"),
-                host=os.environ.get("POSTGRES_HOST"),
-                port=os.environ.get("POSTGRES_PORT")
-            )
-            logging.info(f"Successfully connected to PostgreSQL database: {os.environ.get('POSTGRES_DB')}")
-        except psycopg2.OperationalError as e:
-            logging.error(f"Error connecting to PostgreSQL database: {e}")
-            raise e
+        self.db_type = 'sqlite' if os.environ.get('USE_SQLITE') else 'postgres'
+        self.param_style = '?' if self.db_type == 'sqlite' else '%s'
+
+        if self.db_type == 'sqlite':
+            try:
+                self.conn = sqlite3.connect(':memory:', check_same_thread=False)
+                self.conn.row_factory = sqlite3.Row
+                logging.info("Successfully connected to in-memory SQLite database.")
+            except sqlite3.Error as e:
+                logging.error(f"Error connecting to SQLite database: {e}")
+                raise e
+        else:
+            try:
+                self.conn = psycopg2.connect(
+                    dbname=os.environ.get("POSTGRES_DB"),
+                    user=os.environ.get("POSTGRES_USER"),
+                    password=os.environ.get("POSTGRES_PASSWORD"),
+                    host=os.environ.get("POSTGRES_HOST"),
+                    port=os.environ.get("POSTGRES_PORT")
+                )
+                logging.info(f"Successfully connected to PostgreSQL database: {os.environ.get('POSTGRES_DB')}")
+            except psycopg2.OperationalError as e:
+                logging.error(f"Error connecting to PostgreSQL database: {e}")
+                raise e
 
     def __del__(self):
         """
@@ -42,8 +57,11 @@ class TradingDB:
             logging.info("Database connection closed.")
 
     def get_cursor(self):
-        """Returns a dictionary cursor object."""
-        return self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        """Returns a cursor object compatible with the connected database."""
+        if self.db_type == 'postgres':
+            return self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        else:
+            return self.conn.cursor()
 
     def setup_database(self):
         """
@@ -322,7 +340,7 @@ class TradingDB:
 
     def get_order_history(self, account_id: int) -> List[Dict[str, Any]]:
         """
-        Retriees the entire order history for a specific account.
+        Retrieves the entire order history for a specific account.
         :param account_id: The ID of the account.
         :return: A list of dictionaries representing the orders.
         """
