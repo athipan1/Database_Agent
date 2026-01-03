@@ -34,3 +34,9 @@ class CreateOrderResponse(BaseModel):
     order_id: int
     status: str
     client_order_id: UUID
+
+
+class OrderExecutionResponse(BaseModel):
+    order_id: int
+    status: Literal["executed", "failed"]
+    reason: Optional[str] = None

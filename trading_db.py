@@ -28,6 +28,7 @@ class TradingDB:
 
         if self.db_type == 'sqlite':
             try:
+                # Using a file-based DB for tests can simplify debugging, but memory is faster
                 self.conn = sqlite3.connect(':memory:', check_same_thread=False)
                 self.conn.row_factory = sqlite3.Row
                 logging.info("Successfully connected to in-memory SQLite database.")
@@ -40,321 +41,272 @@ class TradingDB:
                     dbname=os.environ.get("POSTGRES_DB"),
                     user=os.environ.get("POSTGRES_USER"),
                     password=os.environ.get("POSTGRES_PASSWORD"),
-                    host=os.environ.get("POSTGRES_HOST"),
-                    port=os.environ.get("POSTGRES_PORT")
+                    host=os.environ.get("POSTGRES_HOST") or "localhost",
+                    port=os.environ.get("POSTGRES_PORT") or "5432"
                 )
-                logging.info(f"Successfully connected to PostgreSQL database: {os.environ.get('POSTGRES_DB')}")
+                logging.info(f"Successfully connected to PostgreSQL database.")
             except psycopg2.OperationalError as e:
                 logging.error(f"Error connecting to PostgreSQL database: {e}")
                 raise e
 
     def __del__(self):
-        """
-        Destructor to close the database connection when the object is destroyed.
-        """
         if self.conn:
             self.conn.close()
             logging.info("Database connection closed.")
 
     def get_cursor(self):
-        """Returns a cursor object compatible with the connected database."""
         if self.db_type == 'postgres':
+            # Returns rows that behave like dictionaries
             return self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         else:
+            # sqlite3.Row objects are similar enough to DictCursor for this project
             return self.conn.cursor()
 
+    def _to_decimal(self, value: Any) -> Optional[Decimal]:
+        """Converts a database value (potentially string from SQLite) to Decimal."""
+        if value is None:
+            return None
+        return Decimal(str(value))
+
     def setup_database(self):
-        """
-        Creates the necessary tables if they don't exist and initializes
-        the default account. This function is idempotent.
-        """
         cursor = self.get_cursor()
+        # Define types compatible with both DBs
+        numeric_type = 'TEXT' if self.db_type == 'sqlite' else 'NUMERIC(18, 5)'
+        pk_type = 'INTEGER PRIMARY KEY AUTOINCREMENT' if self.db_type == 'sqlite' else 'SERIAL PRIMARY KEY'
+        uuid_type = 'TEXT' if self.db_type == 'sqlite' else 'UUID'
+        timestamp_type = 'TEXT' if self.db_type == 'sqlite' else 'TIMESTAMPTZ'
+
         try:
-            # Create accounts table with NUMERIC for financial data
-            cursor.execute("""
+            cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS accounts (
-                    account_id SERIAL PRIMARY KEY,
+                    account_id {pk_type},
                     account_name TEXT NOT NULL UNIQUE,
-                    cash_balance NUMERIC(18, 5) NOT NULL
+                    cash_balance {numeric_type} NOT NULL
                 );
             """)
-            logging.info("Table 'accounts' created or already exists.")
-
-            # Create positions table with NUMERIC for financial data
-            cursor.execute("""
+            cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS positions (
-                    position_id SERIAL PRIMARY KEY,
+                    position_id {pk_type},
                     account_id INTEGER NOT NULL REFERENCES accounts(account_id),
                     symbol TEXT NOT NULL,
                     quantity BIGINT NOT NULL,
-                    average_cost NUMERIC(18, 5) NOT NULL,
+                    average_cost {numeric_type} NOT NULL,
                     UNIQUE (account_id, symbol)
                 );
             """)
-            logging.info("Table 'positions' created or already exists.")
-
-            # Create orders table with NUMERIC, UUID for idempotency, and failure reason
-            cursor.execute("""
+            cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS orders (
-                    order_id SERIAL PRIMARY KEY,
-                    client_order_id UUID NOT NULL UNIQUE,
+                    order_id {pk_type},
+                    client_order_id {uuid_type} NOT NULL UNIQUE,
                     account_id INTEGER NOT NULL REFERENCES accounts(account_id),
                     symbol TEXT NOT NULL,
                     order_type TEXT NOT NULL CHECK(order_type IN ('BUY', 'SELL')),
                     quantity BIGINT NOT NULL,
-                    price NUMERIC(18, 5),
+                    price {numeric_type},
                     status TEXT NOT NULL CHECK(status IN ('pending', 'executed', 'cancelled', 'failed')),
                     failure_reason TEXT,
-                    timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                    correlation_id TEXT,
+                    timestamp {timestamp_type} DEFAULT CURRENT_TIMESTAMP
                 );
             """)
-            logging.info("Table 'orders' created or already exists.")
-
-            # Create ledger table for full auditability (double-entry bookkeeping)
-            cursor.execute("""
+            cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS ledger (
-                    entry_id SERIAL PRIMARY KEY,
+                    entry_id {pk_type},
                     account_id INTEGER NOT NULL REFERENCES accounts(account_id),
                     order_id INTEGER REFERENCES orders(order_id),
-                    asset TEXT NOT NULL, -- 'CASH' or a stock symbol like 'AAPL'
-                    change NUMERIC(18, 5) NOT NULL, -- Positive for credit, negative for debit
-                    new_balance NUMERIC(18, 5) NOT NULL,
-                    timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    asset TEXT NOT NULL,
+                    change {numeric_type} NOT NULL,
+                    new_balance {numeric_type} NOT NULL,
+                    timestamp {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
                     description TEXT
                 );
             """)
-            logging.info("Table 'ledger' created or already exists.")
 
-            # Create a default account if it doesn't exist
-            cursor.execute("SELECT * FROM accounts WHERE account_name = %s", ('main_account',))
+            cursor.execute(f"SELECT * FROM accounts WHERE account_name = {self.param_style}", ('main_account',))
             if cursor.fetchone() is None:
-                initial_balance = Decimal('1000000.00')
+                initial_balance = '1000000.00'
                 cursor.execute(
-                    "INSERT INTO accounts (account_name, cash_balance) VALUES (%s, %s) RETURNING account_id",
+                    f"INSERT INTO accounts (account_name, cash_balance) VALUES ({self.param_style}, {self.param_style})",
                     ('main_account', initial_balance)
                 )
-                account_id = cursor.fetchone()['account_id']
-                # Initial funding ledger entry
-                cursor.execute("""
-                    INSERT INTO ledger (account_id, asset, change, new_balance, description)
-                    VALUES (%s, 'CASH', %s, %s, 'Initial account funding')
-                """, (account_id, initial_balance, initial_balance))
-                logging.info(f"Created default 'main_account' (ID: {account_id}) with {initial_balance} cash balance.")
 
+                # Fetch the new account_id
+                cursor.execute(f"SELECT account_id FROM accounts WHERE account_name = {self.param_style}", ('main_account',))
+                account_id = cursor.fetchone()['account_id']
+
+                cursor.execute(f"""
+                    INSERT INTO ledger (account_id, asset, change, new_balance, description)
+                    VALUES ({self.param_style}, 'CASH', {self.param_style}, {self.param_style}, 'Initial account funding')
+                """, (account_id, initial_balance, initial_balance))
             self.conn.commit()
-            logging.info("Database setup completed successfully.")
         except Exception as e:
             logging.error(f"Error setting up database: {e}")
             self.conn.rollback()
-            raise e
+            raise
         finally:
             cursor.close()
 
-    def create_order(self, account_id: int, client_order_id: str, symbol: str, order_type: str, quantity: int, price: Decimal) -> Optional[int]:
-        """
-        Creates a new order with 'pending' status.
-        :return: The ID of the newly created order, or None on failure.
-        """
+    def create_order(self, account_id: int, client_order_id: str, symbol: str, order_type: str, quantity: int, price: Decimal, correlation_id: str) -> Optional[int]:
         cursor = self.get_cursor()
         try:
-            cursor.execute("""
-                INSERT INTO orders (account_id, client_order_id, symbol, order_type, quantity, price, status)
-                VALUES (%s, %s, %s, %s, %s, %s, 'pending')
-                RETURNING order_id
-            """, (account_id, client_order_id, symbol.upper(), order_type.upper(), quantity, price))
+            query = f"""
+                INSERT INTO orders (account_id, client_order_id, symbol, order_type, quantity, price, status, correlation_id)
+                VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, 'pending', {self.param_style})
+            """
+            params = (account_id, client_order_id, symbol.upper(), order_type.upper(), quantity, str(price), correlation_id)
+            cursor.execute(query, params)
+
+            # Fetch last inserted ID
+            cursor.execute(f"SELECT order_id FROM orders WHERE client_order_id = {self.param_style}", (client_order_id,))
             order_id = cursor.fetchone()['order_id']
+
             self.conn.commit()
-            logging.info(f"Created pending {order_type} order for {quantity} {symbol} @ {price}. Order ID: {order_id}")
             return order_id
-        except psycopg2.errors.UniqueViolation:
+        except (psycopg2.errors.UniqueViolation, sqlite3.IntegrityError):
             self.conn.rollback()
-            logging.warning(f"Attempted to create an order with a duplicate client_order_id: {client_order_id}")
-            # Optionally, find and return the existing order_id
-            cursor.execute("SELECT order_id FROM orders WHERE client_order_id = %s", (client_order_id,))
+            cursor.execute(f"SELECT order_id FROM orders WHERE client_order_id = {self.param_style}", (client_order_id,))
             existing = cursor.fetchone()
             return existing['order_id'] if existing else None
-        except Exception as e:
-            logging.error(f"Failed to create order: {e}")
+        except Exception:
             self.conn.rollback()
-            return None
+            raise
         finally:
             cursor.close()
 
-    def execute_order(self, order_id: int):
-        """
-        Executes a pending order within a single atomic transaction.
-        Updates account balance, positions, ledger, and the order itself.
-        Uses pessimistic locking ('SELECT FOR UPDATE') to prevent race conditions.
-        """
+    def execute_order(self, order_id: int) -> (str, Optional[str]):
         cursor = self.get_cursor()
         try:
-            # --- Start Atomic Transaction ---
-            cursor.execute("BEGIN;")
+            # For SQLite, FOR UPDATE is not supported, so we start a transaction
+            # with an immediate lock to prevent concurrent writes.
+            # For Postgres, the SELECT...FOR UPDATE will handle locking.
+            if self.db_type == 'sqlite':
+                cursor.execute("BEGIN IMMEDIATE;")
+            else:
+                cursor.execute("BEGIN;")
 
-            # 1. Lock and fetch the order to ensure it's pending and not being processed elsewhere
-            cursor.execute("SELECT * FROM orders WHERE order_id = %s AND status = 'pending' FOR UPDATE", (order_id,))
+
+            lock_clause = "FOR UPDATE" if self.db_type == 'postgres' else ""
+            cursor.execute(f"SELECT * FROM orders WHERE order_id = {self.param_style} AND status = 'pending' {lock_clause}", (order_id,))
             order = cursor.fetchone()
-
             if not order:
-                logging.warning(f"Order {order_id} not found or not pending. Cannot execute.")
-                self.conn.rollback() # Rollback is safe even if nothing happened
-                return
+                self.conn.rollback()
+                return 'failed', 'invalid_state'
 
-            account_id = order['account_id']
-            symbol = order['symbol']
-            order_type = order['order_type']
-            quantity = order['quantity']
-            price = order['price']
+            account_id, symbol, order_type, quantity = order['account_id'], order['symbol'], order['order_type'], order['quantity']
+            price = self._to_decimal(order['price'])
             total_cost = quantity * price
 
-            logging.info(f"Executing {order_type} order {order_id} for {quantity} {symbol} @ {price}")
-
-            # 2. Lock and fetch the account to ensure funds/positions are not changed by another transaction
-            cursor.execute("SELECT account_id, cash_balance FROM accounts WHERE account_id = %s FOR UPDATE", (account_id,))
+            cursor.execute(f"SELECT * FROM accounts WHERE account_id = {self.param_style} {lock_clause}", (account_id,))
             account = cursor.fetchone()
-
             if not account:
-                # This should not happen if foreign keys are set up correctly
                 raise Exception(f"Account {account_id} not found for order {order_id}")
 
+            cash_balance = self._to_decimal(account['cash_balance'])
 
             if order_type == 'BUY':
-                if account['cash_balance'] < total_cost:
-                    self._update_order_status_in_txn(cursor, order_id, 'failed', "Insufficient funds")
-                else:
-                    new_balance = account['cash_balance'] - total_cost
-                    self._update_balance_in_txn(cursor, account_id, new_balance, order_id, -total_cost, f"BUY {quantity} {symbol}")
-                    self._update_position_and_ledger_on_buy_in_txn(cursor, account_id, symbol, quantity, price, order_id)
-                    self._update_order_status_in_txn(cursor, order_id, 'executed')
+                if cash_balance < total_cost:
+                    self._update_order_status_in_txn(cursor, order_id, 'failed', "insufficient_funds")
+                    self.conn.commit()
+                    return 'failed', 'insufficient_funds'
+
+                new_balance = cash_balance - total_cost
+                self._update_balance_in_txn(cursor, account_id, new_balance, order_id, -total_cost, f"BUY {quantity} {symbol}")
+                self._update_position_and_ledger_on_buy_in_txn(cursor, account_id, symbol, quantity, price, order_id)
+                self._update_order_status_in_txn(cursor, order_id, 'executed')
 
             elif order_type == 'SELL':
-                cursor.execute("SELECT * FROM positions WHERE account_id = %s AND symbol = %s FOR UPDATE", (account_id, symbol))
+                cursor.execute(f"SELECT * FROM positions WHERE account_id = {self.param_style} AND symbol = {self.param_style} {lock_clause}", (account_id, symbol))
                 position = cursor.fetchone()
-
                 if not position or position['quantity'] < quantity:
-                    self._update_order_status_in_txn(cursor, order_id, 'failed', "Insufficient shares to sell")
-                else:
-                    new_balance = account['cash_balance'] + total_cost
-                    self._update_balance_in_txn(cursor, account_id, new_balance, order_id, total_cost, f"SELL {quantity} {symbol}")
-                    self._update_position_and_ledger_on_sell_in_txn(cursor, position, quantity, order_id)
-                    self._update_order_status_in_txn(cursor, order_id, 'executed')
+                    self._update_order_status_in_txn(cursor, order_id, 'failed', "insufficient_shares")
+                    self.conn.commit()
+                    return 'failed', 'insufficient_shares'
 
-            # --- Commit Transaction ---
+                new_balance = cash_balance + total_cost
+                self._update_balance_in_txn(cursor, account_id, new_balance, order_id, total_cost, f"SELL {quantity} {symbol}")
+                self._update_position_and_ledger_on_sell_in_txn(cursor, dict(position), quantity, order_id)
+                self._update_order_status_in_txn(cursor, order_id, 'executed')
+
             self.conn.commit()
-            logging.info(f"Transaction for order {order_id} committed successfully.")
-
+            return 'executed', None
         except Exception as e:
-            logging.error(f"Failed to execute order {order_id}: {e}. Rolling back transaction.")
             self.conn.rollback()
-            # We DO NOT try to update status outside the transaction. The order remains 'pending' for review.
+            logging.error(f"Failed to execute order {order_id}: {e}", exc_info=True)
+            raise
         finally:
             cursor.close()
 
     def _update_order_status_in_txn(self, cursor, order_id, status, reason=None):
-        """Helper to update order status within a transaction."""
         cursor.execute(
-            "UPDATE orders SET status = %s, failure_reason = %s WHERE order_id = %s",
+            f"UPDATE orders SET status = {self.param_style}, failure_reason = {self.param_style} WHERE order_id = {self.param_style}",
             (status, reason, order_id)
         )
-        logging.info(f"Order {order_id} status updated to '{status}' in transaction.")
 
     def _update_balance_in_txn(self, cursor, account_id, new_balance, order_id, change, description):
-        """Helper to update account balance and create a ledger entry within a transaction."""
-        cursor.execute("UPDATE accounts SET cash_balance = %s WHERE account_id = %s", (new_balance, account_id))
-        cursor.execute("""
+        cursor.execute(f"UPDATE accounts SET cash_balance = {self.param_style} WHERE account_id = {self.param_style}", (str(new_balance), account_id))
+        cursor.execute(f"""
             INSERT INTO ledger (account_id, order_id, asset, change, new_balance, description)
-            VALUES (%s, %s, 'CASH', %s, %s, %s)
-        """, (account_id, order_id, change, new_balance, description))
+            VALUES ({self.param_style}, {self.param_style}, 'CASH', {self.param_style}, {self.param_style}, {self.param_style})
+        """, (account_id, order_id, str(change), str(new_balance), description))
 
     def _update_position_and_ledger_on_buy_in_txn(self, cursor, account_id, symbol, quantity, price, order_id):
-        """Helper to update/create a position and create ledger entries after a buy."""
-        cursor.execute("SELECT * FROM positions WHERE account_id = %s AND symbol = %s FOR UPDATE", (account_id, symbol))
+        lock_clause = "FOR UPDATE" if self.db_type == 'postgres' else ""
+        cursor.execute(f"SELECT * FROM positions WHERE account_id = {self.param_style} AND symbol = {self.param_style} {lock_clause}", (account_id, symbol))
         position = cursor.fetchone()
 
         if position:
+            avg_cost = self._to_decimal(position['average_cost'])
             new_quantity = position['quantity'] + quantity
-            new_avg_cost = ((position['average_cost'] * position['quantity']) + (price * quantity)) / new_quantity
+            new_avg_cost = ((avg_cost * position['quantity']) + (price * quantity)) / new_quantity
             cursor.execute(
-                "UPDATE positions SET quantity = %s, average_cost = %s WHERE position_id = %s",
-                (new_quantity, new_avg_cost, position['position_id'])
+                f"UPDATE positions SET quantity = {self.param_style}, average_cost = {self.param_style} WHERE position_id = {self.param_style}",
+                (new_quantity, str(new_avg_cost), position['position_id'])
             )
         else:
-            cursor.execute("""
+            new_quantity = quantity
+            cursor.execute(f"""
                 INSERT INTO positions (account_id, symbol, quantity, average_cost)
-                VALUES (%s, %s, %s, %s)
-            """, (account_id, symbol, quantity, price))
+                VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style})
+            """, (account_id, symbol, quantity, str(price)))
 
-        # Ledger entry for the stock
-        cursor.execute("""
+        cursor.execute(f"""
             INSERT INTO ledger (account_id, order_id, asset, change, new_balance, description)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (account_id, order_id, symbol, quantity, new_quantity if position else quantity, f"BUY {quantity} {symbol}"))
+            VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style})
+        """, (account_id, order_id, symbol, quantity, new_quantity, f"BUY {quantity} {symbol}"))
 
     def _update_position_and_ledger_on_sell_in_txn(self, cursor, position, sell_quantity, order_id):
-        """Helper to update/delete a position and create ledger entries after a sell."""
         new_quantity = position['quantity'] - sell_quantity
         if new_quantity == 0:
-            cursor.execute("DELETE FROM positions WHERE position_id = %s", (position['position_id'],))
+            cursor.execute(f"DELETE FROM positions WHERE position_id = {self.param_style}", (position['position_id'],))
         else:
-            cursor.execute("UPDATE positions SET quantity = %s WHERE position_id = %s", (new_quantity, position['position_id']))
+            cursor.execute(f"UPDATE positions SET quantity = {self.param_style} WHERE position_id = {self.param_style}", (new_quantity, position['position_id']))
 
-        # Ledger entry for the stock
-        cursor.execute("""
+        cursor.execute(f"""
             INSERT INTO ledger (account_id, order_id, asset, change, new_balance, description)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style})
         """, (position['account_id'], order_id, position['symbol'], -sell_quantity, new_quantity, f"SELL {sell_quantity} {position['symbol']}"))
 
-
     def get_account_balance(self, account_id: int) -> Optional[Decimal]:
-        """
-        Retrieves the cash balance for a specific account.
-        :param account_id: The ID of the account.
-        :return: The cash balance as a Decimal, or None if account not found.
-        """
         cursor = self.get_cursor()
         try:
-            cursor.execute("SELECT cash_balance FROM accounts WHERE account_id = %s", (account_id,))
+            cursor.execute(f"SELECT cash_balance FROM accounts WHERE account_id = {self.param_style}", (account_id,))
             result = cursor.fetchone()
-            return result['cash_balance'] if result else None
-        except Exception as e:
-            logging.error(f"Error getting account balance: {e}")
-            return None
+            return self._to_decimal(result['cash_balance']) if result else None
         finally:
             cursor.close()
 
     def get_positions(self, account_id: int) -> List[Dict[str, Any]]:
-        """
-        Retrieves all positions for a specific account.
-        :param account_id: The ID of the account.
-        :return: A list of dictionaries representing the positions.
-        """
         cursor = self.get_cursor()
         try:
-            cursor.execute("SELECT symbol, quantity, average_cost FROM positions WHERE account_id = %s", (account_id,))
-            return [dict(row) for row in cursor.fetchall()]
-        except Exception as e:
-            logging.error(f"Error getting positions: {e}")
-            return []
+            cursor.execute(f"SELECT * FROM positions WHERE account_id = {self.param_style}", (account_id,))
+            return [{k: self._to_decimal(v) if k == 'average_cost' else v for k, v in dict(row).items()} for row in cursor.fetchall()]
         finally:
             cursor.close()
 
     def get_order_history(self, account_id: int) -> List[Dict[str, Any]]:
-        """
-        Retrieves the entire order history for a specific account.
-        :param account_id: The ID of the account.
-        :return: A list of dictionaries representing the orders.
-        """
         cursor = self.get_cursor()
         try:
-            cursor.execute("""
-                SELECT order_id, client_order_id, symbol, order_type, quantity, price, status, failure_reason, timestamp
-                FROM orders
-                WHERE account_id = %s
-                ORDER BY timestamp DESC
-            """, (account_id,))
-            return [dict(row) for row in cursor.fetchall()]
-        except Exception as e:
-            logging.error(f"Error getting order history: {e}")
-            return []
+            cursor.execute(f"SELECT * FROM orders WHERE account_id = {self.param_style} ORDER BY timestamp DESC", (account_id,))
+            return [{k: self._to_decimal(v) if k == 'price' else v for k, v in dict(row).items()} for row in cursor.fetchall()]
         finally:
             cursor.close()

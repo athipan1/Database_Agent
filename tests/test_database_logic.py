@@ -31,11 +31,22 @@ def db_session():
     db.setup_database()
 
     # Clean all tables before each test for a clean slate
-    with db.get_cursor() as cursor:
-        cursor.execute("TRUNCATE TABLE ledger, orders, positions, accounts RESTART IDENTITY CASCADE;")
+    cursor = db.get_cursor()
+    try:
+        if db.db_type == 'postgres':
+            cursor.execute("TRUNCATE TABLE ledger, orders, positions, accounts RESTART IDENTITY CASCADE;")
+        else: # SQLite
+            cursor.execute("DELETE FROM ledger;")
+            cursor.execute("DELETE FROM orders;")
+            cursor.execute("DELETE FROM positions;")
+            cursor.execute("DELETE FROM accounts;")
+            # Reset autoincrement sequence for accounts in SQLite
+            cursor.execute("DELETE FROM sqlite_sequence WHERE name='accounts';")
         db.conn.commit()
+    finally:
+        cursor.close()
 
-    # Re-initialize the default account since TRUNCATE cleared it
+    # Re-initialize the default account since TRUNCATE/DELETE cleared it
     db.setup_database()
 
     yield db
@@ -48,13 +59,16 @@ def test_initial_account_setup(db_session: TradingDB):
     balance = db_session.get_account_balance(ACCOUNT_ID)
     assert balance == Decimal('1000000.00')
 
-    with db_session.get_cursor() as cursor:
-        cursor.execute("SELECT * FROM ledger WHERE account_id = %s", (ACCOUNT_ID,))
+    cursor = db_session.get_cursor()
+    try:
+        cursor.execute(f"SELECT * FROM ledger WHERE account_id = {db_session.param_style}", (ACCOUNT_ID,))
         ledger_entry = cursor.fetchone()
+    finally:
+        cursor.close()
 
     assert ledger_entry is not None
     assert ledger_entry['asset'] == 'CASH'
-    assert ledger_entry['change'] == Decimal('1000000.00')
+    assert db_session._to_decimal(ledger_entry['change']) == Decimal('1000000.00')
     assert ledger_entry['description'] == 'Initial account funding'
 
 def test_successful_buy_order(db_session: TradingDB):
@@ -67,11 +81,13 @@ def test_successful_buy_order(db_session: TradingDB):
     total_cost = quantity * price
 
     # 1. Create a pending order
-    order_id = db_session.create_order(ACCOUNT_ID, client_order_id, symbol, "BUY", quantity, price)
+    order_id = db_session.create_order(ACCOUNT_ID, client_order_id, symbol, "BUY", quantity, price, "test-correlation-id")
     assert order_id is not None
 
     # 2. Execute the order
-    db_session.execute_order(order_id)
+    status, reason = db_session.execute_order(order_id)
+    assert status == 'executed'
+    assert reason is None
 
     # 3. Verify the final state of the database
     # Account balance check
@@ -94,19 +110,22 @@ def test_successful_buy_order(db_session: TradingDB):
     assert order['failure_reason'] is None
 
     # Ledger entries check for full auditability
-    with db_session.get_cursor() as cursor:
-        cursor.execute("SELECT * FROM ledger WHERE order_id = %s ORDER BY entry_id", (order_id,))
+    cursor = db_session.get_cursor()
+    try:
+        cursor.execute(f"SELECT * FROM ledger WHERE order_id = {db_session.param_style} ORDER BY entry_id", (order_id,))
         entries = cursor.fetchall()
+    finally:
+        cursor.close()
 
     assert len(entries) == 2
     cash_entry = next(e for e in entries if e['asset'] == 'CASH')
     stock_entry = next(e for e in entries if e['asset'] == symbol)
 
-    assert cash_entry['change'] == -total_cost
-    assert cash_entry['new_balance'] == final_balance
+    assert db_session._to_decimal(cash_entry['change']) == -total_cost
+    assert db_session._to_decimal(cash_entry['new_balance']) == final_balance
 
-    assert stock_entry['change'] == quantity
-    assert stock_entry['new_balance'] == quantity
+    assert int(db_session._to_decimal(stock_entry['change'])) == quantity
+    assert int(db_session._to_decimal(stock_entry['new_balance'])) == quantity
 
 def test_insufficient_funds_buy_order(db_session: TradingDB):
     """Tests that a buy order fails correctly when funds are insufficient."""
@@ -116,8 +135,10 @@ def test_insufficient_funds_buy_order(db_session: TradingDB):
     client_order_id = str(uuid4())
     symbol, quantity, price = "AMZN", 1, Decimal("2000000.00") # Price exceeds initial balance
 
-    order_id = db_session.create_order(ACCOUNT_ID, client_order_id, symbol, "BUY", quantity, price)
-    db_session.execute_order(order_id)
+    order_id = db_session.create_order(ACCOUNT_ID, client_order_id, symbol, "BUY", quantity, price, "test-correlation-id")
+    status, reason = db_session.execute_order(order_id)
+    assert status == 'failed'
+    assert reason == 'insufficient_funds'
 
     # Verify that the state has not changed, and the order is marked as failed
     final_balance = db_session.get_account_balance(ACCOUNT_ID)
@@ -128,12 +149,15 @@ def test_insufficient_funds_buy_order(db_session: TradingDB):
 
     order = db_session.get_order_history(ACCOUNT_ID)[0]
     assert order['status'] == 'failed'
-    assert order['failure_reason'] == 'Insufficient funds'
+    assert order['failure_reason'] == 'insufficient_funds'
 
     # Verify no ledger entries were created for this failed order
-    with db_session.get_cursor() as cursor:
-        cursor.execute("SELECT * FROM ledger WHERE order_id = %s", (order_id,))
+    cursor = db_session.get_cursor()
+    try:
+        cursor.execute(f"SELECT * FROM ledger WHERE order_id = {db_session.param_style}", (order_id,))
         assert cursor.fetchone() is None
+    finally:
+        cursor.close()
 
 def test_idempotency_of_order_creation(db_session: TradingDB):
     """Ensures that creating an order with the same client_order_id is idempotent."""
@@ -141,11 +165,11 @@ def test_idempotency_of_order_creation(db_session: TradingDB):
     client_order_id = str(uuid4())
 
     # First creation attempt
-    order_id_1 = db_session.create_order(ACCOUNT_ID, client_order_id, "TSLA", "BUY", 5, Decimal("250.00"))
+    order_id_1 = db_session.create_order(ACCOUNT_ID, client_order_id, "TSLA", "BUY", 5, Decimal("250.00"), "test-correlation-id-1")
     assert order_id_1 is not None
 
     # Second creation attempt with the same client_order_id
-    order_id_2 = db_session.create_order(ACCOUNT_ID, client_order_id, "TSLA", "BUY", 5, Decimal("250.00"))
+    order_id_2 = db_session.create_order(ACCOUNT_ID, client_order_id, "TSLA", "BUY", 5, Decimal("250.00"), "test-correlation-id-2")
     assert order_id_2 == order_id_1
 
     # Verify that only one order was actually created in the database
