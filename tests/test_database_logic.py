@@ -1,5 +1,6 @@
 import pytest
 import os
+import time
 from decimal import Decimal
 from uuid import uuid4
 import psycopg2.errors
@@ -21,6 +22,10 @@ def db_session():
     Provides a clean database session for each test function.
     It truncates all relevant tables to ensure test isolation.
     """
+    # Allow the DB container time to initialize
+    if os.environ.get("CI"): # Running in CI
+        time.sleep(5)
+
     try:
         db = TradingDB()
     except Exception as e:
@@ -176,3 +181,98 @@ def test_idempotency_of_order_creation(db_session: TradingDB):
     order_history = db_session.get_order_history(ACCOUNT_ID)
     assert len(order_history) == 1
     assert order_history[0]['order_id'] == order_id_1
+
+def test_get_trade_history(db_session: TradingDB):
+    """Tests the retrieval of executed trades, ignoring non-executed ones."""
+    ACCOUNT_ID = 1
+
+    # Create and execute a buy order
+    buy_order_id = db_session.create_order(ACCOUNT_ID, str(uuid4()), "AAPL", "BUY", 10, Decimal("150.00"), "corr-1")
+    db_session.execute_order(buy_order_id)
+
+    # Create a pending order (should not appear in trade history)
+    db_session.create_order(ACCOUNT_ID, str(uuid4()), "GOOG", "BUY", 5, Decimal("2800.00"), "corr-2")
+
+    # Create and execute a sell order
+    sell_order_id = db_session.create_order(ACCOUNT_ID, str(uuid4()), "TSLA", "SELL", 2, Decimal("700.00"), "corr-3")
+    # To execute a sell, we first need a position. Let's create one directly for simplicity.
+    cursor = db_session.get_cursor()
+    try:
+        cursor.execute(
+            f"INSERT INTO positions (account_id, symbol, quantity, average_cost) VALUES ({db_session.param_style}, {db_session.param_style}, {db_session.param_style}, {db_session.param_style})",
+            (ACCOUNT_ID, "TSLA", 10, "650.00")
+        )
+        db_session.conn.commit()
+    finally:
+        cursor.close()
+    db_session.execute_order(sell_order_id)
+
+    # Test fetching the trade history
+    trade_history = db_session.get_trade_history(ACCOUNT_ID)
+    assert len(trade_history) == 2
+
+    # Verify the contents of the trades (most recent first)
+    assert trade_history[0]['side'] == 'sell'
+    assert trade_history[0]['symbol'] == 'TSLA'
+    assert trade_history[1]['side'] == 'buy'
+    assert trade_history[1]['symbol'] == 'AAPL'
+    assert trade_history[1]['notional'] == Decimal("1500.00")
+
+def test_get_price_history(db_session: TradingDB):
+    """Tests retrieval of price history for a given symbol."""
+    # The setup_database in the fixture already adds sample prices for AAPL and GOOG.
+
+    # Test for a symbol that exists
+    aapl_prices = db_session.get_price_history("AAPL")
+    assert len(aapl_prices) >= 2
+    assert aapl_prices[0]['symbol'] == 'AAPL'
+    assert aapl_prices[0]['close'] == Decimal('152.50')
+
+    # Test for a symbol that does not exist
+    non_existent_prices = db_session.get_price_history("XXXX")
+    assert len(non_existent_prices) == 0
+
+def test_get_portfolio_metrics(db_session: TradingDB):
+    """Tests the calculation of portfolio metrics."""
+    ACCOUNT_ID = 1
+    initial_balance = db_session.get_account_balance(ACCOUNT_ID)
+
+    # 1. Buy 10 shares of AAPL at $150
+    aapl_buy_price = Decimal("150.00")
+    aapl_quantity = 10
+    buy_order_id = db_session.create_order(ACCOUNT_ID, str(uuid4()), "AAPL", "BUY", aapl_quantity, aapl_buy_price, "corr-aapl")
+    db_session.execute_order(buy_order_id)
+
+    # The latest price of AAPL in sample data is 152.50
+    latest_aapl_price = Decimal("152.50")
+
+    # 2. Get metrics
+    metrics = db_session.get_portfolio_metrics(ACCOUNT_ID)
+
+    # 3. Assertions
+    assert metrics is not None
+    assert metrics['account_id'] == ACCOUNT_ID
+
+    # Cash balance check
+    expected_cash = initial_balance - (aapl_quantity * aapl_buy_price)
+    assert metrics['cash_balance'] == expected_cash
+
+    # Positions check
+    assert len(metrics['positions']) == 1
+    aapl_pos = metrics['positions'][0]
+    assert aapl_pos['symbol'] == "AAPL"
+    assert aapl_pos['quantity'] == aapl_quantity
+    assert aapl_pos['avg_cost'] == aapl_buy_price
+    assert aapl_pos['market_price'] == latest_aapl_price
+
+    # P&L and Value checks
+    expected_market_value = aapl_quantity * latest_aapl_price
+    expected_unrealized_pnl = (latest_aapl_price - aapl_buy_price) * aapl_quantity
+    assert aapl_pos['market_value'] == expected_market_value
+    assert aapl_pos['unrealized_pnl'] == expected_unrealized_pnl
+
+    assert metrics['unrealized_pnl'] == expected_unrealized_pnl
+    assert metrics['total_portfolio_value'] == expected_cash + expected_market_value
+
+    # Realized PnL is 0 for now as per implementation
+    assert metrics['realized_pnl'] == Decimal("0.00")

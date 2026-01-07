@@ -5,6 +5,7 @@ import psycopg2.extras
 import sqlite3
 from decimal import Decimal
 from typing import Optional, Dict, Any, List
+from datetime import datetime, timezone
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -121,6 +122,34 @@ class TradingDB:
                     description TEXT
                 );
             """)
+
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS prices (
+                    price_id {pk_type},
+                    symbol TEXT NOT NULL,
+                    timestamp {timestamp_type} NOT NULL,
+                    open {numeric_type} NOT NULL,
+                    high {numeric_type} NOT NULL,
+                    low {numeric_type} NOT NULL,
+                    close {numeric_type} NOT NULL,
+                    volume BIGINT NOT NULL,
+                    UNIQUE (symbol, timestamp)
+                );
+            """)
+
+            # Insert sample data for prices if it doesn't exist
+            cursor.execute(f"SELECT * FROM prices WHERE symbol = {self.param_style}", ('AAPL',))
+            if cursor.fetchone() is None:
+                sample_prices = [
+                    ('AAPL', '2025-01-01T10:00:00Z', '150.00', '152.00', '149.50', '151.50', 1000000),
+                    ('AAPL', '2025-01-01T11:00:00Z', '151.50', '153.00', '151.00', '152.50', 1200000),
+                    ('GOOG', '2025-01-01T10:00:00Z', '2800.00', '2810.00', '2795.00', '2805.00', 500000)
+                ]
+                for price_data in sample_prices:
+                    cursor.execute(f"""
+                        INSERT INTO prices (symbol, timestamp, open, high, low, close, volume)
+                        VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style})
+                    """, price_data)
 
             cursor.execute(f"SELECT * FROM accounts WHERE account_name = {self.param_style}", ('main_account',))
             if cursor.fetchone() is None:
@@ -310,3 +339,136 @@ class TradingDB:
             return [{k: self._to_decimal(v) if k == 'price' else v for k, v in dict(row).items()} for row in cursor.fetchall()]
         finally:
             cursor.close()
+
+    def get_trade_history(self, account_id: int, limit: int = 50, offset: int = 0, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
+        cursor = self.get_cursor()
+        try:
+            query = "SELECT order_id, account_id, symbol, order_type, quantity, price, timestamp FROM orders WHERE account_id = ? AND status = 'executed'"
+            params = [account_id]
+
+            if start_date:
+                query += " AND timestamp >= ?"
+                params.append(start_date)
+            if end_date:
+                query += " AND timestamp <= ?"
+                params.append(end_date)
+
+            query += " ORDER BY timestamp DESC, order_id DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            # Adjust param style for PostgreSQL
+            if self.db_type == 'postgres':
+                query = query.replace('?', '%s')
+
+            cursor.execute(query, tuple(params))
+            trades = []
+            for row in cursor.fetchall():
+                row_dict = dict(row)
+                price = self._to_decimal(row_dict.get('price'))
+                quantity = row_dict.get('quantity')
+                notional = price * quantity if price and quantity else Decimal('0')
+
+                trades.append({
+                    "trade_id": row_dict.get('order_id'),
+                    "account_id": row_dict.get('account_id'),
+                    "symbol": row_dict.get('symbol'),
+                    "side": row_dict.get('order_type').lower(),
+                    "quantity": quantity,
+                    "price": price,
+                    "notional": notional,
+                    "executed_at": row_dict.get('timestamp'),
+                    # NOTE: asset_id and source_agent are not in the current schema
+                    "asset_id": None,
+                    "source_agent": None
+                })
+            return trades
+        finally:
+            cursor.close()
+
+    def get_price_history(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> List[Dict[str, Any]]:
+        # Note: timeframe is not used in this MVP implementation.
+        # A real implementation would require time-series aggregation logic.
+        cursor = self.get_cursor()
+        try:
+            query = f"SELECT * FROM prices WHERE symbol = {self.param_style} ORDER BY timestamp DESC LIMIT {self.param_style}"
+            cursor.execute(query, (symbol.upper(), limit))
+
+            return [
+                {
+                    'symbol': row['symbol'],
+                    'timestamp': row['timestamp'],
+                    'open': self._to_decimal(row['open']),
+                    'high': self._to_decimal(row['high']),
+                    'low': self._to_decimal(row['low']),
+                    'close': self._to_decimal(row['close']),
+                    'volume': row['volume'],
+                }
+                for row in cursor.fetchall()
+            ]
+        finally:
+            cursor.close()
+
+    def _get_latest_price(self, symbol: str) -> Optional[Decimal]:
+        cursor = self.get_cursor()
+        try:
+            query = f"SELECT close FROM prices WHERE symbol = {self.param_style} ORDER BY timestamp DESC LIMIT 1"
+            cursor.execute(query, (symbol.upper(),))
+            result = cursor.fetchone()
+            return self._to_decimal(result['close']) if result else None
+        finally:
+            cursor.close()
+
+    def get_portfolio_metrics(self, account_id: int) -> Optional[Dict[str, Any]]:
+        cash_balance = self.get_account_balance(account_id)
+        if cash_balance is None:
+            return None
+
+        positions_list = self.get_positions(account_id)
+
+        total_market_value = Decimal('0')
+        total_unrealized_pnl = Decimal('0')
+        positions_metrics = []
+
+        for pos in positions_list:
+            symbol = pos['symbol']
+            quantity = pos['quantity']
+            avg_cost = self._to_decimal(pos['average_cost'])
+
+            market_price = self._get_latest_price(symbol)
+            if market_price is None:
+                # If no price is available, we can't value this position.
+                # Skip it or use a default value. Here we skip.
+                continue
+
+            market_value = quantity * market_price
+            unrealized_pnl = (market_price - avg_cost) * quantity
+
+            total_market_value += market_value
+            total_unrealized_pnl += unrealized_pnl
+
+            positions_metrics.append({
+                "symbol": symbol,
+                "quantity": quantity,
+                "avg_cost": avg_cost,
+                "market_price": market_price,
+                "market_value": market_value,
+                "unrealized_pnl": unrealized_pnl,
+                 # NOTE: asset_id not in current schema
+                "asset_id": None
+            })
+
+        total_portfolio_value = cash_balance + total_market_value
+
+        # NOTE: Realized PnL calculation is complex and requires full transaction history analysis.
+        # Returning 0.00 for this MVP.
+        realized_pnl = Decimal('0.00')
+
+        return {
+            "account_id": account_id,
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "total_portfolio_value": total_portfolio_value,
+            "cash_balance": cash_balance,
+            "unrealized_pnl": total_unrealized_pnl,
+            "realized_pnl": realized_pnl,
+            "positions": positions_metrics
+        }

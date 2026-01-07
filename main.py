@@ -7,9 +7,13 @@ from fastapi.security import APIKeyHeader
 from starlette.responses import Response
 from typing import List, Optional
 from decimal import Decimal
+from typing import List, Optional
 
 from trading_db import TradingDB
-from models import AccountBalance, Position, Order, CreateOrderBody, CreateOrderResponse, OrderExecutionResponse
+from models import (
+    AccountBalance, Position, Order, CreateOrderBody, CreateOrderResponse,
+    OrderExecutionResponse, Trade, PortfolioMetrics, Price
+)
 
 # --- Context setup for Correlation ID ---
 correlation_id_var: ContextVar[Optional[str]] = ContextVar("correlation_id", default=None)
@@ -169,3 +173,43 @@ async def execute_existing_order(order_id: int, api_key: str = Depends(get_api_k
         # Business logic errors are handled by the return value of execute_order.
         logging.error(f"An unexpected error occurred while executing order {order_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="An unexpected internal server error occurred.")
+
+
+@app.get("/accounts/{account_id}/trade_history", response_model=List[Trade])
+async def get_trade_history_for_account(
+    account_id: int,
+    limit: int = 50,
+    offset: int = 0,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    api_key: str = Depends(get_api_key),
+    correlation_id: str = Depends(get_correlation_id)
+):
+    """Retrieves the executed trade history for a specific account with optional filters."""
+    logging.info(f"Request to get trade history for account {account_id}.")
+    trades = db.get_trade_history(account_id, limit, offset, start_date, end_date)
+    return trades
+
+@app.get("/accounts/{account_id}/portfolio_metrics", response_model=PortfolioMetrics)
+async def get_portfolio_metrics_for_account(account_id: int, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    """Retrieves portfolio metrics for a specific account."""
+    logging.info(f"Request to get portfolio metrics for account {account_id}.")
+    metrics = db.get_portfolio_metrics(account_id)
+    if metrics is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return metrics
+
+@app.get("/prices/{symbol}", response_model=List[Price])
+async def get_price_history_for_symbol(
+    symbol: str,
+    timeframe: str = '1h',
+    limit: int = 100,
+    api_key: str = Depends(get_api_key),
+    correlation_id: str = Depends(get_correlation_id)
+):
+    """Retrieves price history for a specific symbol."""
+    logging.info(f"Request to get price history for symbol {symbol}.")
+    prices = db.get_price_history(symbol, timeframe, limit)
+    if not prices:
+        raise HTTPException(status_code=404, detail=f"No price data found for symbol {symbol}")
+    return prices
