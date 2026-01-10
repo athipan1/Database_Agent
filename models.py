@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Literal, Optional
+from typing import Literal, Optional, List
 from decimal import Decimal
 from uuid import UUID
 import datetime
@@ -24,7 +24,7 @@ class Order(BaseModel):
     timestamp: datetime.datetime
 
 class CreateOrderBody(BaseModel):
-    client_order_id: UUID = Field(..., description="A unique client-generated ID for idempotency.")
+    client_order_id: Optional[UUID] = Field(None, description="A unique client-generated ID for idempotency. If not provided, one will be generated.")
     symbol: str
     order_type: Literal["BUY", "SELL"]
     quantity: int
