@@ -100,6 +100,13 @@ async def shutdown_event():
 
 # --- API Endpoints ---
 
+@app.get("/health")
+async def health_check():
+    """Simple health check endpoint."""
+    logging.info("Health check endpoint was called.")
+    return {"status": "ok"}
+
+
 @app.get("/accounts/{account_id}/balance", response_model=AccountBalance)
 async def get_balance(account_id: int, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """Retriees the cash balance for a specific account."""
@@ -132,9 +139,13 @@ async def create_new_order(account_id: int, order_body: CreateOrderBody, api_key
     the existing order's ID will be returned.
     """
     logging.info(f"Request to create new order for account {account_id}.")
+
+    # If client_order_id is not provided, generate one.
+    client_order_id = order_body.client_order_id or uuid.uuid4()
+
     order_id = db.create_order(
         account_id=account_id,
-        client_order_id=str(order_body.client_order_id),
+        client_order_id=str(client_order_id),
         symbol=order_body.symbol,
         order_type=order_body.order_type,
         quantity=order_body.quantity,
@@ -147,7 +158,7 @@ async def create_new_order(account_id: int, order_body: CreateOrderBody, api_key
     return CreateOrderResponse(
         order_id=order_id,
         status="pending",
-        client_order_id=order_body.client_order_id
+        client_order_id=client_order_id
     )
 
 @app.post("/orders/{order_id}/execute", response_model=OrderExecutionResponse)
