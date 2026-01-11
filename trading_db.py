@@ -37,17 +37,43 @@ class TradingDB:
                 logging.error(f"Error connecting to SQLite database: {e}")
                 raise e
         else:
+            from psycopg2 import sql
+
+            db_name = os.environ.get("POSTGRES_DB")
+            db_user = os.environ.get("POSTGRES_USER")
+            db_pass = os.environ.get("POSTGRES_PASSWORD")
+            db_host = os.environ.get("POSTGRES_HOST") or "localhost"
+            db_port = os.environ.get("POSTGRES_PORT") or "5432"
+
             try:
-                self.conn = psycopg2.connect(
-                    dbname=os.environ.get("POSTGRES_DB"),
-                    user=os.environ.get("POSTGRES_USER"),
-                    password=os.environ.get("POSTGRES_PASSWORD"),
-                    host=os.environ.get("POSTGRES_HOST") or "localhost",
-                    port=os.environ.get("POSTGRES_PORT") or "5432"
+                # Connect to the default 'postgres' database to manage our application DB
+                conn_temp = psycopg2.connect(
+                    dbname='postgres', user=db_user, password=db_pass, host=db_host, port=db_port
                 )
-                logging.info(f"Successfully connected to PostgreSQL database.")
-            except psycopg2.OperationalError as e:
-                logging.error(f"Error connecting to PostgreSQL database: {e}")
+                conn_temp.autocommit = True
+                cursor_temp = conn_temp.cursor()
+
+                # Check if the target database exists
+                cursor_temp.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
+                db_exists = cursor_temp.fetchone()
+
+                if not db_exists:
+                    logging.info(f"Database '{db_name}' does not exist. Creating it...")
+                    create_db_query = sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name))
+                    cursor_temp.execute(create_db_query)
+                    logging.info(f"Database '{db_name}' created successfully.")
+
+                cursor_temp.close()
+                conn_temp.close()
+
+                # Now, connect to our application's database
+                self.conn = psycopg2.connect(
+                    dbname=db_name, user=db_user, password=db_pass, host=db_host, port=db_port
+                )
+                logging.info(f"Successfully connected to PostgreSQL database '{db_name}'.")
+
+            except psycopg2.Error as e:
+                logging.error(f"Error with PostgreSQL: {e}")
                 raise e
 
     def __del__(self):

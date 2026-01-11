@@ -10,7 +10,8 @@ import psycopg2.errors
 os.environ.setdefault("POSTGRES_DB", "trading_db_test") # Use a separate test DB
 os.environ.setdefault("POSTGRES_USER", "trading_user")
 os.environ.setdefault("POSTGRES_PASSWORD", "your_strong_password_here")
-os.environ.setdefault("POSTGRES_HOST", "localhost") # Default for local docker-compose
+# When running tests via `docker compose exec`, the API container can resolve the DB container by its service name.
+os.environ.setdefault("POSTGRES_HOST", "db")
 os.environ.setdefault("POSTGRES_PORT", "5432")
 
 # This import must come after setting the environment variables
