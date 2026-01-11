@@ -12,7 +12,7 @@ from alembic import command
 # Set environment variables for testing.
 os.environ.setdefault("POSTGRES_DB", "trading_db_test")
 os.environ.setdefault("POSTGRES_USER", "trading_user")
-os.environ.setdefault("POSTGRES_PASSWORD", "your_strong_password_here")
+os.environ.setdefault("POSTGRES_PASSWORD", "postgres")
 os.environ.setdefault("POSTGRES_HOST", "localhost")
 os.environ.setdefault("POSTGRES_PORT", "5432")
 
