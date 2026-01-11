@@ -23,6 +23,9 @@ class Order(BaseModel):
     failure_reason: Optional[str] = None
     timestamp: datetime.datetime
 
+    class Config:
+        orm_mode = True
+
 class CreateOrderBody(BaseModel):
     client_order_id: Optional[UUID] = Field(None, description="A unique client-generated ID for idempotency. If not provided, one will be generated.")
     symbol: str
@@ -71,6 +74,8 @@ class PortfolioMetrics(BaseModel):
     realized_pnl: Decimal
     positions: List[PositionMetrics]
 
+from pydantic import validator
+
 class Price(BaseModel):
     symbol: str
     timestamp: str
@@ -79,3 +84,33 @@ class Price(BaseModel):
     low: Decimal
     close: Decimal
     volume: int
+
+class PriceInput(BaseModel):
+    symbol: str
+    timestamp: datetime.datetime
+    open: Decimal = Field(..., gt=0)
+    high: Decimal = Field(..., gt=0)
+    low: Decimal = Field(..., gt=0)
+    close: Decimal = Field(..., gt=0)
+    volume: int = Field(..., gt=0)
+
+    @validator('high')
+    def high_must_be_the_highest(cls, v, values):
+        if 'open' in values and v < values['open']:
+            raise ValueError('high must be greater than or equal to open')
+        if 'low' in values and v < values['low']:
+            raise ValueError('high must be greater than or equal to low')
+        if 'close' in values and v < values['close']:
+            raise ValueError('high must be greater than or equal to close')
+        return v
+
+    @validator('low')
+    def low_must_be_the_lowest(cls, v, values):
+        if 'open' in values and v > values['open']:
+            raise ValueError('low must be less than or equal to open')
+        if 'high' in values and v > values['high']:
+            # This case is already covered by the high validator, but we keep it for completeness
+            raise ValueError('low must be less than or equal to high')
+        if 'close' in values and v > values['close']:
+            raise ValueError('low must be less than or equal to close')
+        return v
