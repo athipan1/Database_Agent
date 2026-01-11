@@ -1,11 +1,14 @@
 import os
 import logging
-import psycopg2
-import psycopg2.extras
-import sqlite3
 from decimal import Decimal
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
+from sqlalchemy import create_engine, desc, and_, or_
+from sqlalchemy.orm import sessionmaker, Session, scoped_session
+from sqlalchemy.exc import IntegrityError, NoResultFound
+from contextlib import contextmanager
+
+from database_models import Base, Account, Position, Order, Ledger, Price
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -15,460 +18,305 @@ class TradingDB:
     A class to manage the database for the trading robot.
     It handles database connection, schema creation, and all trading operations
     with a strong focus on transaction safety and data integrity.
-    It supports both PostgreSQL and SQLite for flexibility in testing and deployment.
+    It uses SQLAlchemy ORM to support both PostgreSQL and SQLite.
     """
     def __init__(self):
         """
         Initializes the TradingDB object and connects to the database.
-        If USE_SQLITE is set in the environment, it uses an in-memory SQLite database.
-        Otherwise, it connects to a PostgreSQL database using environment variables.
         """
-        self.conn = None
+        self.engine = None
         self.db_type = 'sqlite' if os.environ.get('USE_SQLITE') else 'postgres'
-        self.param_style = '?' if self.db_type == 'sqlite' else '%s'
 
         if self.db_type == 'sqlite':
-            try:
-                # Using a file-based DB for tests can simplify debugging, but memory is faster
-                self.conn = sqlite3.connect(':memory:', check_same_thread=False)
-                self.conn.row_factory = sqlite3.Row
-                logging.info("Successfully connected to in-memory SQLite database.")
-            except sqlite3.Error as e:
-                logging.error(f"Error connecting to SQLite database: {e}")
-                raise e
+            db_url = 'sqlite:///trading.db'
+            self.engine = create_engine(db_url, connect_args={'check_same_thread': False})
+            logging.info("Successfully configured for SQLite database.")
         else:
-            try:
-                self.conn = psycopg2.connect(
-                    dbname=os.environ.get("POSTGRES_DB"),
-                    user=os.environ.get("POSTGRES_USER"),
-                    password=os.environ.get("POSTGRES_PASSWORD"),
-                    host=os.environ.get("POSTGRES_HOST") or "localhost",
-                    port=os.environ.get("POSTGRES_PORT") or "5432"
-                )
-                logging.info(f"Successfully connected to PostgreSQL database.")
-            except psycopg2.OperationalError as e:
-                logging.error(f"Error connecting to PostgreSQL database: {e}")
-                raise e
+            db_url = (
+                f"postgresql://{os.environ.get('POSTGRES_USER')}:{os.environ.get('POSTGRES_PASSWORD')}@"
+                f"{os.environ.get('POSTGRES_HOST', 'localhost')}:{os.environ.get('POSTGRES_PORT', '5432')}/"
+                f"{os.environ.get('POSTGRES_DB')}"
+            )
+            self.engine = create_engine(db_url)
+            logging.info("Successfully configured for PostgreSQL database.")
 
-    def __del__(self):
-        if self.conn:
-            self.conn.close()
-            logging.info("Database connection closed.")
+        # Session factory
+        self.SessionFactory = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
 
-    def get_cursor(self):
-        if self.db_type == 'postgres':
-            # Returns rows that behave like dictionaries
-            return self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        else:
-            # sqlite3.Row objects are similar enough to DictCursor for this project
-            return self.conn.cursor()
-
-    def _to_decimal(self, value: Any) -> Optional[Decimal]:
-        """Converts a database value (potentially string from SQLite) to Decimal."""
-        if value is None:
-            return None
-        return Decimal(str(value))
-
-    def setup_database(self):
-        cursor = self.get_cursor()
-        # Define types compatible with both DBs
-        numeric_type = 'TEXT' if self.db_type == 'sqlite' else 'NUMERIC(18, 5)'
-        pk_type = 'INTEGER PRIMARY KEY AUTOINCREMENT' if self.db_type == 'sqlite' else 'SERIAL PRIMARY KEY'
-        uuid_type = 'TEXT' if self.db_type == 'sqlite' else 'UUID'
-        timestamp_type = 'TEXT' if self.db_type == 'sqlite' else 'TIMESTAMPTZ'
-
+    @contextmanager
+    def get_session(self) -> Session:
+        """Provide a transactional scope around a series of operations."""
+        session = self.SessionFactory()
         try:
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS accounts (
-                    account_id {pk_type},
-                    account_name TEXT NOT NULL UNIQUE,
-                    cash_balance {numeric_type} NOT NULL
-                );
-            """)
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS positions (
-                    position_id {pk_type},
-                    account_id INTEGER NOT NULL REFERENCES accounts(account_id),
-                    symbol TEXT NOT NULL,
-                    quantity BIGINT NOT NULL,
-                    average_cost {numeric_type} NOT NULL,
-                    UNIQUE (account_id, symbol)
-                );
-            """)
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS orders (
-                    order_id {pk_type},
-                    client_order_id {uuid_type} NOT NULL UNIQUE,
-                    account_id INTEGER NOT NULL REFERENCES accounts(account_id),
-                    symbol TEXT NOT NULL,
-                    order_type TEXT NOT NULL CHECK(order_type IN ('BUY', 'SELL')),
-                    quantity BIGINT NOT NULL,
-                    price {numeric_type},
-                    status TEXT NOT NULL CHECK(status IN ('pending', 'executed', 'cancelled', 'failed')),
-                    failure_reason TEXT,
-                    correlation_id TEXT,
-                    timestamp {timestamp_type} DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS ledger (
-                    entry_id {pk_type},
-                    account_id INTEGER NOT NULL REFERENCES accounts(account_id),
-                    order_id INTEGER REFERENCES orders(order_id),
-                    asset TEXT NOT NULL,
-                    change {numeric_type} NOT NULL,
-                    new_balance {numeric_type} NOT NULL,
-                    timestamp {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
-                    description TEXT
-                );
-            """)
-
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS prices (
-                    price_id {pk_type},
-                    symbol TEXT NOT NULL,
-                    timestamp {timestamp_type} NOT NULL,
-                    open {numeric_type} NOT NULL,
-                    high {numeric_type} NOT NULL,
-                    low {numeric_type} NOT NULL,
-                    close {numeric_type} NOT NULL,
-                    volume BIGINT NOT NULL,
-                    UNIQUE (symbol, timestamp)
-                );
-            """)
-
-            # Insert sample data for prices if it doesn't exist
-            cursor.execute(f"SELECT * FROM prices WHERE symbol = {self.param_style}", ('AAPL',))
-            if cursor.fetchone() is None:
-                sample_prices = [
-                    ('AAPL', '2025-01-01T10:00:00Z', '150.00', '152.00', '149.50', '151.50', 1000000),
-                    ('AAPL', '2025-01-01T11:00:00Z', '151.50', '153.00', '151.00', '152.50', 1200000),
-                    ('GOOG', '2025-01-01T10:00:00Z', '2800.00', '2810.00', '2795.00', '2805.00', 500000)
-                ]
-                for price_data in sample_prices:
-                    cursor.execute(f"""
-                        INSERT INTO prices (symbol, timestamp, open, high, low, close, volume)
-                        VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style})
-                    """, price_data)
-
-            cursor.execute(f"SELECT * FROM accounts WHERE account_name = {self.param_style}", ('main_account',))
-            if cursor.fetchone() is None:
-                initial_balance = '1000000.00'
-                cursor.execute(
-                    f"INSERT INTO accounts (account_name, cash_balance) VALUES ({self.param_style}, {self.param_style})",
-                    ('main_account', initial_balance)
-                )
-
-                # Fetch the new account_id
-                cursor.execute(f"SELECT account_id FROM accounts WHERE account_name = {self.param_style}", ('main_account',))
-                account_id = cursor.fetchone()['account_id']
-
-                cursor.execute(f"""
-                    INSERT INTO ledger (account_id, asset, change, new_balance, description)
-                    VALUES ({self.param_style}, 'CASH', {self.param_style}, {self.param_style}, 'Initial account funding')
-                """, (account_id, initial_balance, initial_balance))
-            self.conn.commit()
-        except Exception as e:
-            logging.error(f"Error setting up database: {e}")
-            self.conn.rollback()
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
             raise
         finally:
-            cursor.close()
+            session.close()
 
     def create_order(self, account_id: int, client_order_id: str, symbol: str, order_type: str, quantity: int, price: Decimal, correlation_id: str) -> Optional[int]:
-        cursor = self.get_cursor()
-        try:
-            query = f"""
-                INSERT INTO orders (account_id, client_order_id, symbol, order_type, quantity, price, status, correlation_id)
-                VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, 'pending', {self.param_style})
-            """
-            params = (account_id, client_order_id, symbol.upper(), order_type.upper(), quantity, str(price), correlation_id)
-            cursor.execute(query, params)
+        with self.get_session() as session:
+            try:
+                # Check for idempotency
+                existing_order = session.query(Order).filter(Order.client_order_id == client_order_id).first()
+                if existing_order:
+                    return existing_order.order_id
 
-            # Fetch last inserted ID
-            cursor.execute(f"SELECT order_id FROM orders WHERE client_order_id = {self.param_style}", (client_order_id,))
-            order_id = cursor.fetchone()['order_id']
+                new_order = Order(
+                    account_id=account_id,
+                    client_order_id=client_order_id,
+                    symbol=symbol.upper(),
+                    order_type=order_type.upper(),
+                    quantity=quantity,
+                    price=price,
+                    status='pending',
+                    correlation_id=correlation_id
+                )
+                session.add(new_order)
+                session.flush() # Flush to get the new order_id
+                return new_order.order_id
+            except IntegrityError:
+                # This could happen in a race condition, so we double-check.
+                session.rollback()
+                existing_order = session.query(Order).filter(Order.client_order_id == client_order_id).first()
+                return existing_order.order_id if existing_order else None
 
-            self.conn.commit()
-            return order_id
-        except (psycopg2.errors.UniqueViolation, sqlite3.IntegrityError):
-            self.conn.rollback()
-            cursor.execute(f"SELECT order_id FROM orders WHERE client_order_id = {self.param_style}", (client_order_id,))
-            existing = cursor.fetchone()
-            return existing['order_id'] if existing else None
-        except Exception:
-            self.conn.rollback()
-            raise
-        finally:
-            cursor.close()
 
     def execute_order(self, order_id: int) -> (str, Optional[str]):
-        cursor = self.get_cursor()
-        try:
-            # For SQLite, FOR UPDATE is not supported, so we start a transaction
-            # with an immediate lock to prevent concurrent writes.
-            # For Postgres, the SELECT...FOR UPDATE will handle locking.
-            if self.db_type == 'sqlite':
-                cursor.execute("BEGIN IMMEDIATE;")
-            else:
-                cursor.execute("BEGIN;")
+        with self.get_session() as session:
+            try:
+                order = session.query(Order).with_for_update().filter(Order.order_id == order_id).one()
 
+                if order.status != 'pending':
+                    return 'failed', 'invalid_state'
 
-            lock_clause = "FOR UPDATE" if self.db_type == 'postgres' else ""
-            cursor.execute(f"SELECT * FROM orders WHERE order_id = {self.param_style} AND status = 'pending' {lock_clause}", (order_id,))
-            order = cursor.fetchone()
-            if not order:
-                self.conn.rollback()
-                return 'failed', 'invalid_state'
+                account = session.query(Account).with_for_update().filter(Account.account_id == order.account_id).one()
 
-            account_id, symbol, order_type, quantity = order['account_id'], order['symbol'], order['order_type'], order['quantity']
-            price = self._to_decimal(order['price'])
-            total_cost = quantity * price
+                total_cost = order.quantity * order.price
 
-            cursor.execute(f"SELECT * FROM accounts WHERE account_id = {self.param_style} {lock_clause}", (account_id,))
-            account = cursor.fetchone()
-            if not account:
-                raise Exception(f"Account {account_id} not found for order {order_id}")
+                if order.order_type == 'BUY':
+                    if account.cash_balance < total_cost:
+                        order.status = 'failed'
+                        order.failure_reason = 'insufficient_funds'
+                        return 'failed', 'insufficient_funds'
 
-            cash_balance = self._to_decimal(account['cash_balance'])
+                    account.cash_balance -= total_cost
+                    self._update_position_and_ledger_on_buy(session, account, order)
 
-            if order_type == 'BUY':
-                if cash_balance < total_cost:
-                    self._update_order_status_in_txn(cursor, order_id, 'failed', "insufficient_funds")
-                    self.conn.commit()
-                    return 'failed', 'insufficient_funds'
+                elif order.order_type == 'SELL':
+                    position = session.query(Position).with_for_update().filter(
+                        Position.account_id == order.account_id,
+                        Position.symbol == order.symbol
+                    ).first()
 
-                new_balance = cash_balance - total_cost
-                self._update_balance_in_txn(cursor, account_id, new_balance, order_id, -total_cost, f"BUY {quantity} {symbol}")
-                self._update_position_and_ledger_on_buy_in_txn(cursor, account_id, symbol, quantity, price, order_id)
-                self._update_order_status_in_txn(cursor, order_id, 'executed')
+                    if not position or position.quantity < order.quantity:
+                        order.status = 'failed'
+                        order.failure_reason = 'insufficient_shares'
+                        return 'failed', 'insufficient_shares'
 
-            elif order_type == 'SELL':
-                cursor.execute(f"SELECT * FROM positions WHERE account_id = {self.param_style} AND symbol = {self.param_style} {lock_clause}", (account_id, symbol))
-                position = cursor.fetchone()
-                if not position or position['quantity'] < quantity:
-                    self._update_order_status_in_txn(cursor, order_id, 'failed', "insufficient_shares")
-                    self.conn.commit()
-                    return 'failed', 'insufficient_shares'
+                    account.cash_balance += total_cost
+                    self._update_position_and_ledger_on_sell(session, position, order)
 
-                new_balance = cash_balance + total_cost
-                self._update_balance_in_txn(cursor, account_id, new_balance, order_id, total_cost, f"SELL {quantity} {symbol}")
-                self._update_position_and_ledger_on_sell_in_txn(cursor, dict(position), quantity, order_id)
-                self._update_order_status_in_txn(cursor, order_id, 'executed')
+                order.status = 'executed'
+                return 'executed', None
 
-            self.conn.commit()
-            return 'executed', None
-        except Exception as e:
-            self.conn.rollback()
-            logging.error(f"Failed to execute order {order_id}: {e}", exc_info=True)
-            raise
-        finally:
-            cursor.close()
+            except NoResultFound:
+                return 'failed', 'order_not_found'
+            except Exception as e:
+                logging.error(f"Failed to execute order {order_id}: {e}", exc_info=True)
+                raise
 
-    def _update_order_status_in_txn(self, cursor, order_id, status, reason=None):
-        cursor.execute(
-            f"UPDATE orders SET status = {self.param_style}, failure_reason = {self.param_style} WHERE order_id = {self.param_style}",
-            (status, reason, order_id)
-        )
-
-    def _update_balance_in_txn(self, cursor, account_id, new_balance, order_id, change, description):
-        cursor.execute(f"UPDATE accounts SET cash_balance = {self.param_style} WHERE account_id = {self.param_style}", (str(new_balance), account_id))
-        cursor.execute(f"""
-            INSERT INTO ledger (account_id, order_id, asset, change, new_balance, description)
-            VALUES ({self.param_style}, {self.param_style}, 'CASH', {self.param_style}, {self.param_style}, {self.param_style})
-        """, (account_id, order_id, str(change), str(new_balance), description))
-
-    def _update_position_and_ledger_on_buy_in_txn(self, cursor, account_id, symbol, quantity, price, order_id):
-        lock_clause = "FOR UPDATE" if self.db_type == 'postgres' else ""
-        cursor.execute(f"SELECT * FROM positions WHERE account_id = {self.param_style} AND symbol = {self.param_style} {lock_clause}", (account_id, symbol))
-        position = cursor.fetchone()
+    def _update_position_and_ledger_on_buy(self, session: Session, account: Account, order: Order):
+        position = session.query(Position).with_for_update().filter(
+            Position.account_id == account.account_id,
+            Position.symbol == order.symbol
+        ).first()
 
         if position:
-            avg_cost = self._to_decimal(position['average_cost'])
-            new_quantity = position['quantity'] + quantity
-            new_avg_cost = ((avg_cost * position['quantity']) + (price * quantity)) / new_quantity
-            cursor.execute(
-                f"UPDATE positions SET quantity = {self.param_style}, average_cost = {self.param_style} WHERE position_id = {self.param_style}",
-                (new_quantity, str(new_avg_cost), position['position_id'])
+            new_avg_cost = ((position.average_cost * position.quantity) + (order.price * order.quantity)) / (position.quantity + order.quantity)
+            position.quantity += order.quantity
+            position.average_cost = new_avg_cost
+        else:
+            position = Position(
+                account_id=account.account_id,
+                symbol=order.symbol,
+                quantity=order.quantity,
+                average_cost=order.price
             )
-        else:
-            new_quantity = quantity
-            cursor.execute(f"""
-                INSERT INTO positions (account_id, symbol, quantity, average_cost)
-                VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style})
-            """, (account_id, symbol, quantity, str(price)))
+            session.add(position)
 
-        cursor.execute(f"""
-            INSERT INTO ledger (account_id, order_id, asset, change, new_balance, description)
-            VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style})
-        """, (account_id, order_id, symbol, quantity, new_quantity, f"BUY {quantity} {symbol}"))
+        # Ledger for cash
+        session.add(Ledger(
+            account_id=account.account_id,
+            order_id=order.order_id,
+            asset='CASH',
+            change=-(order.quantity * order.price),
+            new_balance=account.cash_balance,
+            description=f"BUY {order.quantity} {order.symbol}"
+        ))
+        # Ledger for asset
+        session.add(Ledger(
+            account_id=account.account_id,
+            order_id=order.order_id,
+            asset=order.symbol,
+            change=order.quantity,
+            new_balance=position.quantity,
+            description=f"BUY {order.quantity} {order.symbol}"
+        ))
 
-    def _update_position_and_ledger_on_sell_in_txn(self, cursor, position, sell_quantity, order_id):
-        new_quantity = position['quantity'] - sell_quantity
-        if new_quantity == 0:
-            cursor.execute(f"DELETE FROM positions WHERE position_id = {self.param_style}", (position['position_id'],))
-        else:
-            cursor.execute(f"UPDATE positions SET quantity = {self.param_style} WHERE position_id = {self.param_style}", (new_quantity, position['position_id']))
+    def _update_position_and_ledger_on_sell(self, session: Session, position: Position, order: Order):
+        position.quantity -= order.quantity
 
-        cursor.execute(f"""
-            INSERT INTO ledger (account_id, order_id, asset, change, new_balance, description)
-            VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style})
-        """, (position['account_id'], order_id, position['symbol'], -sell_quantity, new_quantity, f"SELL {sell_quantity} {position['symbol']}"))
+        # Ledger for cash
+        session.add(Ledger(
+            account_id=order.account_id,
+            order_id=order.order_id,
+            asset='CASH',
+            change=(order.quantity * order.price),
+            new_balance=position.account.cash_balance, # account balance already updated
+            description=f"SELL {order.quantity} {order.symbol}"
+        ))
+        # Ledger for asset
+        session.add(Ledger(
+            account_id=order.account_id,
+            order_id=order.order_id,
+            asset=order.symbol,
+            change=-order.quantity,
+            new_balance=position.quantity,
+            description=f"SELL {order.quantity} {order.symbol}"
+        ))
+
+        if position.quantity == 0:
+            session.delete(position)
 
     def get_account_balance(self, account_id: int) -> Optional[Decimal]:
-        cursor = self.get_cursor()
-        try:
-            cursor.execute(f"SELECT cash_balance FROM accounts WHERE account_id = {self.param_style}", (account_id,))
-            result = cursor.fetchone()
-            return self._to_decimal(result['cash_balance']) if result else None
-        finally:
-            cursor.close()
+        with self.get_session() as session:
+            account = session.query(Account).filter(Account.account_id == account_id).first()
+            return account.cash_balance if account else None
 
     def get_positions(self, account_id: int) -> List[Dict[str, Any]]:
-        cursor = self.get_cursor()
-        try:
-            cursor.execute(f"SELECT * FROM positions WHERE account_id = {self.param_style}", (account_id,))
-            return [{k: self._to_decimal(v) if k == 'average_cost' else v for k, v in dict(row).items()} for row in cursor.fetchall()]
-        finally:
-            cursor.close()
+        with self.get_session() as session:
+            positions = session.query(Position).filter(Position.account_id == account_id).all()
+            return [
+                {
+                    "symbol": p.symbol,
+                    "quantity": p.quantity,
+                    "average_cost": p.average_cost
+                } for p in positions
+            ]
 
-    def get_order_history(self, account_id: int) -> List[Dict[str, Any]]:
-        cursor = self.get_cursor()
-        try:
-            cursor.execute(f"SELECT * FROM orders WHERE account_id = {self.param_style} ORDER BY timestamp DESC", (account_id,))
-            return [{k: self._to_decimal(v) if k == 'price' else v for k, v in dict(row).items()} for row in cursor.fetchall()]
-        finally:
-            cursor.close()
+    def get_order_history(self, account_id: int) -> List[Order]:
+        with self.get_session() as session:
+            orders = session.query(Order).filter(Order.account_id == account_id).order_by(desc(Order.timestamp)).all()
+            session.expunge_all()
+            return orders
 
     def get_trade_history(self, account_id: int, limit: int = 50, offset: int = 0, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
-        cursor = self.get_cursor()
-        try:
-            query = "SELECT order_id, account_id, symbol, order_type, quantity, price, timestamp FROM orders WHERE account_id = ? AND status = 'executed'"
-            params = [account_id]
-
+        with self.get_session() as session:
+            query = session.query(Order).filter(
+                Order.account_id == account_id,
+                Order.status == 'executed'
+            )
             if start_date:
-                query += " AND timestamp >= ?"
-                params.append(start_date)
+                query = query.filter(Order.timestamp >= start_date)
             if end_date:
-                query += " AND timestamp <= ?"
-                params.append(end_date)
+                query = query.filter(Order.timestamp <= end_date)
 
-            query += " ORDER BY timestamp DESC, order_id DESC LIMIT ? OFFSET ?"
-            params.extend([limit, offset])
-
-            # Adjust param style for PostgreSQL
-            if self.db_type == 'postgres':
-                query = query.replace('?', '%s')
-
-            cursor.execute(query, tuple(params))
-            trades = []
-            for row in cursor.fetchall():
-                row_dict = dict(row)
-                price = self._to_decimal(row_dict.get('price'))
-                quantity = row_dict.get('quantity')
-                notional = price * quantity if price and quantity else Decimal('0')
-
-                trades.append({
-                    "trade_id": row_dict.get('order_id'),
-                    "account_id": row_dict.get('account_id'),
-                    "symbol": row_dict.get('symbol'),
-                    "side": row_dict.get('order_type').lower(),
-                    "quantity": quantity,
-                    "price": price,
-                    "notional": notional,
-                    "executed_at": row_dict.get('timestamp'),
-                    # NOTE: asset_id and source_agent are not in the current schema
-                    "asset_id": None,
-                    "source_agent": None
-                })
-            return trades
-        finally:
-            cursor.close()
-
-    def get_price_history(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> List[Dict[str, Any]]:
-        # Note: timeframe is not used in this MVP implementation.
-        # A real implementation would require time-series aggregation logic.
-        cursor = self.get_cursor()
-        try:
-            query = f"SELECT * FROM prices WHERE symbol = {self.param_style} ORDER BY timestamp DESC LIMIT {self.param_style}"
-            cursor.execute(query, (symbol.upper(), limit))
+            trades = query.order_by(desc(Order.timestamp), desc(Order.order_id)).limit(limit).offset(offset).all()
 
             return [
                 {
-                    'symbol': row['symbol'],
-                    'timestamp': row['timestamp'],
-                    'open': self._to_decimal(row['open']),
-                    'high': self._to_decimal(row['high']),
-                    'low': self._to_decimal(row['low']),
-                    'close': self._to_decimal(row['close']),
-                    'volume': row['volume'],
-                }
-                for row in cursor.fetchall()
+                    "trade_id": t.order_id,
+                    "account_id": t.account_id,
+                    "symbol": t.symbol,
+                    "side": t.order_type.lower(),
+                    "quantity": t.quantity,
+                    "price": t.price,
+                    "notional": t.price * t.quantity,
+                    "executed_at": t.timestamp.isoformat(),
+                    "asset_id": None,
+                    "source_agent": None
+                } for t in trades
             ]
-        finally:
-            cursor.close()
 
-    def _get_latest_price(self, symbol: str) -> Optional[Decimal]:
-        cursor = self.get_cursor()
-        try:
-            query = f"SELECT close FROM prices WHERE symbol = {self.param_style} ORDER BY timestamp DESC LIMIT 1"
-            cursor.execute(query, (symbol.upper(),))
-            result = cursor.fetchone()
-            return self._to_decimal(result['close']) if result else None
-        finally:
-            cursor.close()
+    def get_price_history(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> List[Dict[str, Any]]:
+        with self.get_session() as session:
+            prices = session.query(Price).filter(Price.symbol == symbol.upper()).order_by(desc(Price.timestamp)).limit(limit).all()
+            return [
+                {
+                    'symbol': p.symbol,
+                    'timestamp': p.timestamp.isoformat(),
+                    'open': p.open,
+                    'high': p.high,
+                    'low': p.low,
+                    'close': p.close,
+                    'volume': p.volume,
+                } for p in prices
+            ]
+
+    def add_price(self, price_data: Dict[str, Any]) -> Price:
+        with self.get_session() as session:
+            # Check for existing price to ensure idempotency
+            existing_price = session.query(Price).filter(
+                Price.symbol == price_data['symbol'].upper(),
+                Price.timestamp == price_data['timestamp']
+            ).first()
+            if existing_price:
+                return existing_price
+
+            new_price = Price(**price_data)
+            session.add(new_price)
+            session.flush()
+            return new_price
+
+    def _get_latest_price(self, session: Session, symbol: str) -> Optional[Decimal]:
+        price = session.query(Price.close).filter(Price.symbol == symbol.upper()).order_by(desc(Price.timestamp)).first()
+        return price.close if price else None
 
     def get_portfolio_metrics(self, account_id: int) -> Optional[Dict[str, Any]]:
-        cash_balance = self.get_account_balance(account_id)
-        if cash_balance is None:
-            return None
+        with self.get_session() as session:
+            account = session.query(Account).filter(Account.account_id == account_id).first()
+            if not account:
+                return None
 
-        positions_list = self.get_positions(account_id)
+            positions = session.query(Position).filter(Position.account_id == account_id).all()
 
-        total_market_value = Decimal('0')
-        total_unrealized_pnl = Decimal('0')
-        positions_metrics = []
+            total_market_value = Decimal('0')
+            total_unrealized_pnl = Decimal('0')
+            positions_metrics = []
 
-        for pos in positions_list:
-            symbol = pos['symbol']
-            quantity = pos['quantity']
-            avg_cost = self._to_decimal(pos['average_cost'])
+            for pos in positions:
+                market_price = self._get_latest_price(session, pos.symbol)
+                if market_price is None:
+                    continue
 
-            market_price = self._get_latest_price(symbol)
-            if market_price is None:
-                # If no price is available, we can't value this position.
-                # Skip it or use a default value. Here we skip.
-                continue
+                market_value = pos.quantity * market_price
+                unrealized_pnl = (market_price - pos.average_cost) * pos.quantity
 
-            market_value = quantity * market_price
-            unrealized_pnl = (market_price - avg_cost) * quantity
+                total_market_value += market_value
+                total_unrealized_pnl += unrealized_pnl
 
-            total_market_value += market_value
-            total_unrealized_pnl += unrealized_pnl
+                positions_metrics.append({
+                    "symbol": pos.symbol,
+                    "quantity": pos.quantity,
+                    "avg_cost": pos.average_cost,
+                    "market_price": market_price,
+                    "market_value": market_value,
+                    "unrealized_pnl": unrealized_pnl,
+                    "asset_id": None
+                })
 
-            positions_metrics.append({
-                "symbol": symbol,
-                "quantity": quantity,
-                "avg_cost": avg_cost,
-                "market_price": market_price,
-                "market_value": market_value,
-                "unrealized_pnl": unrealized_pnl,
-                 # NOTE: asset_id not in current schema
-                "asset_id": None
-            })
+            total_portfolio_value = account.cash_balance + total_market_value
+            realized_pnl = Decimal('0.00') # Placeholder
 
-        total_portfolio_value = cash_balance + total_market_value
-
-        # NOTE: Realized PnL calculation is complex and requires full transaction history analysis.
-        # Returning 0.00 for this MVP.
-        realized_pnl = Decimal('0.00')
-
-        return {
-            "account_id": account_id,
-            "as_of": datetime.now(timezone.utc).isoformat(),
-            "total_portfolio_value": total_portfolio_value,
-            "cash_balance": cash_balance,
-            "unrealized_pnl": total_unrealized_pnl,
-            "realized_pnl": realized_pnl,
-            "positions": positions_metrics
-        }
+            return {
+                "account_id": account_id,
+                "as_of": datetime.now(timezone.utc).isoformat(),
+                "total_portfolio_value": total_portfolio_value,
+                "cash_balance": account.cash_balance,
+                "unrealized_pnl": total_unrealized_pnl,
+                "realized_pnl": realized_pnl,
+                "positions": positions_metrics
+            }

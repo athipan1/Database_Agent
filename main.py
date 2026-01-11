@@ -12,8 +12,11 @@ from typing import List, Optional
 from trading_db import TradingDB
 from models import (
     AccountBalance, Position, Order, CreateOrderBody, CreateOrderResponse,
-    OrderExecutionResponse, Trade, PortfolioMetrics, Price
+    OrderExecutionResponse, Trade, PortfolioMetrics, Price, PriceInput
 )
+from database_models import Price as DBPrice # Import the SQLAlchemy model
+from alembic.config import Config
+from alembic import command
 
 # --- Context setup for Correlation ID ---
 correlation_id_var: ContextVar[Optional[str]] = ContextVar("correlation_id", default=None)
@@ -85,12 +88,12 @@ db = TradingDB()
 async def startup_event():
     logging.info("Database Agent API starting up.")
     try:
-        db.setup_database()
-        logging.info("Database setup verification complete.")
+        # Run Alembic migrations
+        alembic_cfg = Config("alembic.ini")
+        command.upgrade(alembic_cfg, "head")
+        logging.info("Database migrations applied successfully.")
     except Exception as e:
-        logging.critical(f"FATAL: Database setup failed on startup: {e}")
-        # In a real-world scenario, you might want the app to fail fast
-        # if the database is not ready.
+        logging.critical(f"FATAL: Database migrations failed on startup: {e}")
         raise
 
 @app.on_event("shutdown")
@@ -125,10 +128,10 @@ async def get_positions_for_account(account_id: int, api_key: str = Depends(get_
 
 @app.get("/accounts/{account_id}/orders", response_model=List[Order])
 async def get_order_history_for_account(account_id: int, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    """Retrieves the complete order history for a specific account."""
+    """Retrieve the complete order history for a specific account."""
     logging.info(f"Request to get order history for account {account_id}.")
-    orders = db.get_order_history(account_id)
-    return orders
+    orders_data = db.get_order_history(account_id)
+    return [Order.from_orm(o) for o in orders_data]
 
 @app.post("/accounts/{account_id}/orders", response_model=CreateOrderResponse, status_code=201)
 async def create_new_order(account_id: int, order_body: CreateOrderBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
@@ -224,3 +227,17 @@ async def get_price_history_for_symbol(
     if not prices:
         raise HTTPException(status_code=404, detail=f"No price data found for symbol {symbol}")
     return prices
+
+@app.post("/prices", response_model=Price, status_code=201)
+async def add_new_price(price_data: PriceInput, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    """
+    Adds a new price entry for a symbol.
+    This endpoint is idempotent based on the symbol and timestamp.
+    """
+    logging.info(f"Request to add new price for symbol {price_data.symbol}.")
+    try:
+        new_price = db.add_price(price_data.dict())
+        return new_price
+    except Exception as e:
+        logging.error(f"Failed to add price data: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to add price data.")

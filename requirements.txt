@@ -4,3 +4,7 @@ uvicorn[standard]
 python-dotenv
 pydantic
 psycopg2-binary
+
+# Added for ORM and Migrations
+sqlalchemy
+alembic
