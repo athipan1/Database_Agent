@@ -29,6 +29,9 @@ def db_session():
     """
     if os.environ.get("CI"):
         time.sleep(5)
+    else:
+        # Give DB time to start locally
+        time.sleep(20)
 
     # Ensure a clean slate by deleting the test DB file if it exists
     if os.environ.get('USE_SQLITE') and os.path.exists('trading.db'):
