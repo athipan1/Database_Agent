@@ -1,7 +1,9 @@
 import os
 import logging
+import sys
 import uuid
 from contextvars import ContextVar
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Security, Request
 from fastapi.security import APIKeyHeader
 from starlette.responses import Response
@@ -26,6 +28,9 @@ class CorrelationIdFilter(logging.Filter):
         return True
 
 # --- Configuration & Setup ---
+# Load environment variables from .env file
+load_dotenv()
+
 # Configure logging with a placeholder for the correlation ID
 LOG_FORMAT = '%(asctime)s - %(levelname)s - [%(correlation_id)s] - %(message)s'
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
@@ -64,7 +69,8 @@ async def get_correlation_id() -> str:
 # API Key Security
 DATABASE_AGENT_API_KEY = os.environ.get("DATABASE_AGENT_API_KEY")
 if not DATABASE_AGENT_API_KEY:
-    logging.critical("CRITICAL: DATABASE_AGENT_API_KEY environment variable not set. API will be inaccessible.")
+    logging.critical("CRITICAL: DATABASE_AGENT_API_KEY environment variable not set. Application will terminate.")
+    sys.exit(1) # Exit gracefully
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
 def get_api_key(api_key_header: str = Security(api_key_header)):

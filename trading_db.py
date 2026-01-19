@@ -3,8 +3,10 @@ import logging
 import psycopg2
 import psycopg2.extras
 import sqlite3
+import time
 from decimal import Decimal
 from typing import Optional, Dict, Any, List
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 
 # Configure logging
@@ -17,63 +19,72 @@ class TradingDB:
     with a strong focus on transaction safety and data integrity.
     It supports both PostgreSQL and SQLite for flexibility in testing and deployment.
     """
-    def __init__(self):
+    def __init__(self, max_retries=5, initial_delay=1):
         """
-        Initializes the TradingDB object and connects to the database.
-        If USE_SQLITE is set in the environment, it uses an in-memory SQLite database.
-        Otherwise, it connects to a PostgreSQL database using environment variables.
+        Initializes the TradingDB and connects to the database with retry logic.
         """
         self.conn = None
         self.db_type = 'sqlite' if os.environ.get('USE_SQLITE') else 'postgres'
         self.param_style = '?' if self.db_type == 'sqlite' else '%s'
+        self.max_retries = max_retries
+        self.initial_delay = initial_delay
 
+        try:
+            self._connect_with_retry()
+        except Exception as e:
+            logging.critical(f"FATAL: Could not connect to the database after {self.max_retries} retries. Application will exit.")
+            raise e
+
+    def _connect_with_retry(self):
+        """
+        Attempts to connect to the database, retrying with exponential backoff.
+        """
         if self.db_type == 'sqlite':
             try:
-                # Using a file-based DB for tests can simplify debugging, but memory is faster
                 self.conn = sqlite3.connect(':memory:', check_same_thread=False)
                 self.conn.row_factory = sqlite3.Row
                 logging.info("Successfully connected to in-memory SQLite database.")
+                return
             except sqlite3.Error as e:
                 logging.error(f"Error connecting to SQLite database: {e}")
                 raise e
-        else:
-            from psycopg2 import sql
 
-            db_name = os.environ.get("POSTGRES_DB")
-            db_user = os.environ.get("POSTGRES_USER")
-            db_pass = os.environ.get("POSTGRES_PASSWORD")
-            db_host = os.environ.get("POSTGRES_HOST") or "localhost"
-            db_port = os.environ.get("POSTGRES_PORT") or "5432"
+        # PostgreSQL connection logic
+        database_url = os.environ.get("DATABASE_URL")
+        if not database_url:
+            raise ValueError("DATABASE_URL environment variable is not set for PostgreSQL connection.")
 
+        result = urlparse(database_url)
+        conn_params = {
+            "dbname": result.path[1:],
+            "user": result.username,
+            "password": result.password,
+            "host": result.hostname,
+            "port": result.port,
+            "connect_timeout": 3
+        }
+
+        retries = 0
+        delay = self.initial_delay
+        while retries < self.max_retries:
             try:
-                # Connect to the default 'postgres' database to manage our application DB
-                conn_temp = psycopg2.connect(
-                    dbname='postgres', user=db_user, password=db_pass, host=db_host, port=db_port
-                )
-                conn_temp.autocommit = True
-                cursor_temp = conn_temp.cursor()
-
-                # Check if the target database exists
-                cursor_temp.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
-                db_exists = cursor_temp.fetchone()
-
-                if not db_exists:
-                    logging.info(f"Database '{db_name}' does not exist. Creating it...")
-                    create_db_query = sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name))
-                    cursor_temp.execute(create_db_query)
-                    logging.info(f"Database '{db_name}' created successfully.")
-
-                cursor_temp.close()
-                conn_temp.close()
-
-                # Now, connect to our application's database
-                self.conn = psycopg2.connect(
-                    dbname=db_name, user=db_user, password=db_pass, host=db_host, port=db_port
-                )
-                logging.info(f"Successfully connected to PostgreSQL database '{db_name}'.")
-
+                # Set a short timeout to allow the retry logic to work quickly
+                self.conn = psycopg2.connect(**conn_params)
+                logging.info(f"Successfully connected to PostgreSQL database.")
+                return # Exit the loop on successful connection
+            except psycopg2.OperationalError as e:
+                logging.warning(f"Database connection attempt {retries + 1}/{self.max_retries} failed: {e}")
+                retries += 1
+                if retries < self.max_retries:
+                    logging.info(f"Retrying in {delay} seconds...")
+                    time.sleep(delay)
+                    delay *= 2 # Exponential backoff
+                else:
+                    logging.error("Maximum retry attempts reached. Could not connect to the database.")
+                    raise e
             except psycopg2.Error as e:
-                logging.error(f"Error with PostgreSQL: {e}")
+                 # Handle other potential psycopg2 errors (e.g., authentication)
+                logging.error(f"A non-retriable PostgreSQL error occurred: {e}")
                 raise e
 
     def __del__(self):
