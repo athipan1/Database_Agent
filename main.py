@@ -7,9 +7,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Security, Request
 from fastapi.security import APIKeyHeader
 from starlette.responses import Response
-from typing import List, Optional
+from typing import Optional
 from decimal import Decimal
-from typing import List, Optional
 
 from trading_db import TradingDB
 from models import (
@@ -122,14 +121,14 @@ async def get_balance(account_id: int, api_key: str = Depends(get_api_key), corr
         raise HTTPException(status_code=404, detail="Account not found")
     return AccountBalance(cash_balance=balance)
 
-@app.get("/accounts/{account_id}/positions", response_model=List[Position])
+@app.get("/accounts/{account_id}/positions", response_model=list[Position])
 async def get_positions_for_account(account_id: int, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """Retrieves all positions for a specific account."""
     logging.info(f"Request to get positions for account {account_id}.")
     positions = db.get_positions(account_id)
     return positions
 
-@app.get("/accounts/{account_id}/orders", response_model=List[Order])
+@app.get("/accounts/{account_id}/orders", response_model=list[Order])
 async def get_order_history_for_account(account_id: int, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """Retrieves the complete order history for a specific account."""
     logging.info(f"Request to get order history for account {account_id}.")
@@ -192,7 +191,7 @@ async def execute_existing_order(order_id: int, api_key: str = Depends(get_api_k
         raise HTTPException(status_code=500, detail="An unexpected internal server error occurred.")
 
 
-@app.get("/accounts/{account_id}/trade_history", response_model=List[Trade])
+@app.get("/accounts/{account_id}/trade_history", response_model=list[Trade])
 async def get_trade_history_for_account(
     account_id: int,
     limit: int = 50,
@@ -216,7 +215,7 @@ async def get_portfolio_metrics_for_account(account_id: int, api_key: str = Depe
         raise HTTPException(status_code=404, detail="Account not found")
     return metrics
 
-@app.get("/prices/{symbol}", response_model=List[Price])
+@app.get("/prices/{symbol}", response_model=list[Price])
 async def get_price_history_for_symbol(
     symbol: str,
     timeframe: str = '1h',

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Literal, Optional, List
+from typing import Literal, Optional
 from decimal import Decimal
 from uuid import UUID
 import datetime
@@ -69,7 +69,7 @@ class PortfolioMetrics(BaseModel):
     cash_balance: Decimal
     unrealized_pnl: Decimal
     realized_pnl: Decimal
-    positions: List[PositionMetrics]
+    positions: list[PositionMetrics]
 
 class Price(BaseModel):
     symbol: str
