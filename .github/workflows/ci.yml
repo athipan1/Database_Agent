@@ -1,4 +1,4 @@
-name: Python CI
+name: CI/CD Pipeline
 
 on:
   push:
@@ -7,45 +7,45 @@ on:
     branches: [ main ]
 
 jobs:
-  build-and-test:
+  test:
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:13
-        env:
-          POSTGRES_USER: trading_user
-          POSTGRES_PASSWORD: your_strong_password_here
-          POSTGRES_DB: trading_db_test
-        ports:
-          - 5432:5432
-        # Add a health check to wait for PostgreSQL to be ready
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
-    - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Set up Python 3.9
-      uses: actions/setup-python@v3
-      with:
-        python-version: 3.9
+      - name: Run tests with SQLite
+        run: |
+          docker compose run --rm --no-deps -u root -e USE_SQLITE=1 api \
+          sh -c "pip install -r requirements-dev.txt && pytest"
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install -r requirements-dev.txt
+  build-and-push:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Test with pytest
-      env:
-        POSTGRES_USER: trading_user
-        POSTGRES_PASSWORD: your_strong_password_here
-        POSTGRES_DB: trading_db_test
-        POSTGRES_HOST: localhost # Because we map the port to the host
-        POSTGRES_PORT: 5432
-      run: |
-        python3 -m pytest
+      - name: Set image name to lowercase
+        id: string
+        uses: ASzc/change-string-case-action@v5
+        with:
+          string: ghcr.io/${{ github.repository }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        env:
+          IMAGE_NAME: ${{ steps.string.outputs.lowercase }}
+        run: |
+          docker compose build api
+          docker tag ${{ env.IMAGE_NAME }}:latest ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push --all-tags ${{ env.IMAGE_NAME }}
