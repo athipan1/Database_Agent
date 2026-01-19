@@ -52,11 +52,36 @@ class TradingDB:
         # PostgreSQL connection logic
         database_url = os.environ.get("DATABASE_URL")
         if not database_url:
-            raise ValueError("DATABASE_URL environment variable is not set for PostgreSQL connection.")
+            logging.info("DATABASE_URL not set, attempting to construct from individual POSTGRES_ variables.")
+            db_user = os.environ.get("POSTGRES_USER")
+            db_pass = os.environ.get("POSTGRES_PASSWORD")
+            db_host = os.environ.get("POSTGRES_HOST")
+            db_port = os.environ.get("POSTGRES_PORT")
+            db_name = os.environ.get("POSTGRES_DB")
+
+            if all([db_user, db_pass, db_host, db_port, db_name]):
+                database_url = f"postgresql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
+            else:
+                raise ValueError("Database connection details not found. Set DATABASE_URL or all individual POSTGRES_ variables.")
 
         result = urlparse(database_url)
+        target_db_name = result.path[1:]
+
+        # Connection details for the maintenance 'postgres' database
+        maintenance_conn_params = {
+            "dbname": "postgres",
+            "user": result.username,
+            "password": result.password,
+            "host": result.hostname,
+            "port": result.port,
+            "connect_timeout": 3
+        }
+
+        self._ensure_database_exists(maintenance_conn_params, target_db_name)
+
+        # Connection details for the target application database
         conn_params = {
-            "dbname": result.path[1:],
+            "dbname": target_db_name,
             "user": result.username,
             "password": result.password,
             "host": result.hostname,
@@ -86,6 +111,28 @@ class TradingDB:
                  # Handle other potential psycopg2 errors (e.g., authentication)
                 logging.error(f"A non-retriable PostgreSQL error occurred: {e}")
                 raise e
+
+    def _ensure_database_exists(self, conn_params, db_name):
+        """Connects to the maintenance DB to create the target DB if it doesn't exist."""
+        conn_temp = None
+        try:
+            conn_temp = psycopg2.connect(**conn_params)
+            conn_temp.autocommit = True
+            with conn_temp.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
+                db_exists = cursor.fetchone()
+                if not db_exists:
+                    logging.info(f"Database '{db_name}' does not exist. Creating it...")
+                    # Use psycopg2's sql module for safe quoting of identifiers
+                    from psycopg2 import sql
+                    cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name)))
+                    logging.info(f"Database '{db_name}' created successfully.")
+        except psycopg2.Error as e:
+            logging.error(f"Error while checking/creating database '{db_name}': {e}")
+            raise
+        finally:
+            if conn_temp:
+                conn_temp.close()
 
     def __del__(self):
         if self.conn:
