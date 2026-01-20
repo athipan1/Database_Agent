@@ -4,15 +4,21 @@ from decimal import Decimal
 from uuid import UUID
 import datetime
 
-class AccountBalance(BaseModel):
+class CustomBaseModel(BaseModel):
+    class Config:
+        json_encoders = {
+            datetime.datetime: lambda v: v.isoformat()
+        }
+
+class AccountBalance(CustomBaseModel):
     cash_balance: Decimal
 
-class Position(BaseModel):
+class Position(CustomBaseModel):
     symbol: str
     quantity: int
     average_cost: Decimal
 
-class Order(BaseModel):
+class Order(CustomBaseModel):
     order_id: int
     client_order_id: UUID
     symbol: str
@@ -23,25 +29,25 @@ class Order(BaseModel):
     failure_reason: Optional[str] = None
     timestamp: datetime.datetime
 
-class CreateOrderBody(BaseModel):
+class CreateOrderBody(CustomBaseModel):
     client_order_id: Optional[UUID] = Field(None, description="A unique client-generated ID for idempotency. If not provided, one will be generated.")
     symbol: str
     order_type: Literal["BUY", "SELL"]
     quantity: int
     price: Decimal
 
-class CreateOrderResponse(BaseModel):
+class CreateOrderResponse(CustomBaseModel):
     order_id: int
     status: str
     client_order_id: UUID
 
 
-class OrderExecutionResponse(BaseModel):
+class OrderExecutionResponse(CustomBaseModel):
     order_id: int
     status: Literal["executed", "failed"]
     reason: Optional[str] = None
 
-class Trade(BaseModel):
+class Trade(CustomBaseModel):
     trade_id: int
     account_id: int
     asset_id: Optional[str] = None
@@ -53,7 +59,7 @@ class Trade(BaseModel):
     executed_at: str
     source_agent: Optional[str] = None
 
-class PositionMetrics(BaseModel):
+class PositionMetrics(CustomBaseModel):
     asset_id: Optional[str] = None
     symbol: str
     quantity: int
@@ -62,7 +68,7 @@ class PositionMetrics(BaseModel):
     market_value: Decimal
     unrealized_pnl: Decimal
 
-class PortfolioMetrics(BaseModel):
+class PortfolioMetrics(CustomBaseModel):
     account_id: int
     as_of: str
     total_portfolio_value: Decimal
@@ -71,7 +77,7 @@ class PortfolioMetrics(BaseModel):
     realized_pnl: Decimal
     positions: list[PositionMetrics]
 
-class Price(BaseModel):
+class Price(CustomBaseModel):
     symbol: str
     timestamp: str
     open: Decimal

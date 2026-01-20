@@ -162,6 +162,20 @@ class TradingDB:
         timestamp_type = 'TEXT' if self.db_type == 'sqlite' else 'TIMESTAMPTZ'
 
         try:
+            if self.db_type == 'postgres':
+                cursor.execute("""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'order_type_enum') THEN
+                            CREATE TYPE order_type_enum AS ENUM ('BUY', 'SELL');
+                        END IF;
+                        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'order_status_enum') THEN
+                            CREATE TYPE order_status_enum AS ENUM ('pending', 'executed', 'cancelled', 'failed');
+                        END IF;
+                    END
+                    $$;
+                """)
+
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS accounts (
                     account_id {pk_type},
@@ -179,16 +193,21 @@ class TradingDB:
                     UNIQUE (account_id, symbol)
                 );
             """)
+            order_type_pg = 'order_type_enum' if self.db_type == 'postgres' else 'TEXT'
+            order_status_pg = 'order_status_enum' if self.db_type == 'postgres' else 'TEXT'
+            order_type_check = "CHECK(order_type IN ('BUY', 'SELL'))" if self.db_type == 'sqlite' else ''
+            order_status_check = "CHECK(status IN ('pending', 'executed', 'cancelled', 'failed'))" if self.db_type == 'sqlite' else ''
+
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS orders (
                     order_id {pk_type},
                     client_order_id {uuid_type} NOT NULL UNIQUE,
                     account_id INTEGER NOT NULL REFERENCES accounts(account_id),
                     symbol TEXT NOT NULL,
-                    order_type TEXT NOT NULL CHECK(order_type IN ('BUY', 'SELL')),
+                    order_type {order_type_pg} NOT NULL {order_type_check},
                     quantity BIGINT NOT NULL,
                     price {numeric_type},
-                    status TEXT NOT NULL CHECK(status IN ('pending', 'executed', 'cancelled', 'failed')),
+                    status {order_status_pg} NOT NULL {order_status_check},
                     failure_reason TEXT,
                     correlation_id TEXT,
                     timestamp {timestamp_type} DEFAULT CURRENT_TIMESTAMP
