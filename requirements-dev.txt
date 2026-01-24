@@ -1,2 +1,5 @@
 pytest
 httpx
+alpaca-trade-api
+tenacity
+schedule

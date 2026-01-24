@@ -230,13 +230,14 @@ class TradingDB:
                 CREATE TABLE IF NOT EXISTS prices (
                     price_id {pk_type},
                     symbol TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
                     timestamp {timestamp_type} NOT NULL,
                     open {numeric_type} NOT NULL,
                     high {numeric_type} NOT NULL,
                     low {numeric_type} NOT NULL,
                     close {numeric_type} NOT NULL,
                     volume BIGINT NOT NULL,
-                    UNIQUE (symbol, timestamp)
+                    UNIQUE (symbol, timeframe, timestamp)
                 );
             """)
 
@@ -244,14 +245,14 @@ class TradingDB:
             cursor.execute(f"SELECT * FROM prices WHERE symbol = {self.param_style}", ('AAPL',))
             if cursor.fetchone() is None:
                 sample_prices = [
-                    ('AAPL', '2025-01-01T10:00:00Z', '150.00', '152.00', '149.50', '151.50', 1000000),
-                    ('AAPL', '2025-01-01T11:00:00Z', '151.50', '153.00', '151.00', '152.50', 1200000),
-                    ('GOOG', '2025-01-01T10:00:00Z', '2800.00', '2810.00', '2795.00', '2805.00', 500000)
+                    ('AAPL', '1h', '2025-01-01T10:00:00Z', '150.00', '152.00', '149.50', '151.50', 1000000),
+                    ('AAPL', '1h', '2025-01-01T11:00:00Z', '151.50', '153.00', '151.00', '152.50', 1200000),
+                    ('GOOG', '1d', '2025-01-01T10:00:00Z', '2800.00', '2810.00', '2795.00', '2805.00', 500000)
                 ]
                 for price_data in sample_prices:
                     cursor.execute(f"""
-                        INSERT INTO prices (symbol, timestamp, open, high, low, close, volume)
-                        VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style})
+                        INSERT INTO prices (symbol, timeframe, timestamp, open, high, low, close, volume)
+                        VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style})
                     """, price_data)
 
             cursor.execute(f"SELECT * FROM accounts WHERE account_name = {self.param_style}", ('main_account',))
@@ -489,16 +490,15 @@ class TradingDB:
             cursor.close()
 
     def get_price_history(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> List[Dict[str, Any]]:
-        # Note: timeframe is not used in this MVP implementation.
-        # A real implementation would require time-series aggregation logic.
         cursor = self.get_cursor()
         try:
-            query = f"SELECT * FROM prices WHERE symbol = {self.param_style} ORDER BY timestamp DESC LIMIT {self.param_style}"
-            cursor.execute(query, (symbol.upper(), limit))
+            query = f"SELECT * FROM prices WHERE symbol = {self.param_style} AND timeframe = {self.param_style} ORDER BY timestamp DESC LIMIT {self.param_style}"
+            cursor.execute(query, (symbol.upper(), timeframe, limit))
 
             return [
                 {
                     'symbol': row['symbol'],
+                    'timeframe': row['timeframe'],
                     'timestamp': row['timestamp'],
                     'open': self._to_decimal(row['open']),
                     'high': self._to_decimal(row['high']),
@@ -518,6 +518,48 @@ class TradingDB:
             cursor.execute(query, (symbol.upper(),))
             result = cursor.fetchone()
             return self._to_decimal(result['close']) if result else None
+        finally:
+            cursor.close()
+
+    def ingest_historical_prices(self, price_data: List[Dict[str, Any]]):
+        """
+        Ingests a list of historical price data points into the database.
+        It uses an 'ON CONFLICT DO NOTHING' clause to prevent duplicates
+        based on the (symbol, timeframe, timestamp) unique constraint.
+        This is a highly efficient bulk operation.
+        """
+        if not price_data:
+            logging.info("No price data provided to ingest.")
+            return
+
+        if self.db_type == 'sqlite':
+            # SQLite uses a different syntax for ON CONFLICT
+            query = """
+                INSERT INTO prices (symbol, timeframe, timestamp, open, high, low, close, volume)
+                VALUES (:symbol, :timeframe, :timestamp, :open, :high, :low, :close, :volume)
+                ON CONFLICT(symbol, timeframe, timestamp) DO NOTHING;
+            """
+        else: # PostgreSQL
+            query = """
+                INSERT INTO prices (symbol, timeframe, timestamp, open, high, low, close, volume)
+                VALUES (%(symbol)s, %(timeframe)s, %(timestamp)s, %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s)
+                ON CONFLICT (symbol, timeframe, timestamp) DO NOTHING;
+            """
+
+        cursor = self.get_cursor()
+        try:
+            # For SQLite, execute many with a list of dicts
+            if self.db_type == 'sqlite':
+                 cursor.executemany(query, price_data)
+            else: # For psycopg2, execute_batch is highly efficient
+                psycopg2.extras.execute_batch(cursor, query, price_data)
+
+            self.conn.commit()
+            logging.info(f"Successfully ingested or skipped {len(price_data)} price records.")
+        except Exception as e:
+            logging.error(f"Database error during price ingestion: {e}", exc_info=True)
+            self.conn.rollback()
+            raise
         finally:
             cursor.close()
 
