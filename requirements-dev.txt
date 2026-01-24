@@ -3,4 +3,4 @@ httpx
 alpaca-trade-api
 tenacity
 schedule
-urllib3==1.26.17
+urllib3==1.26.18
