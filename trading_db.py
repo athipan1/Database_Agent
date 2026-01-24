@@ -5,7 +5,7 @@ import psycopg2.extras
 import sqlite3
 import time
 from decimal import Decimal
-from typing import Optional, Dict, Any, List
+from typing import Optional, Any
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 
@@ -427,7 +427,7 @@ class TradingDB:
         finally:
             cursor.close()
 
-    def get_positions(self, account_id: int) -> List[Dict[str, Any]]:
+    def get_positions(self, account_id: int) -> list[dict[str, Any]]:
         cursor = self.get_cursor()
         try:
             cursor.execute(f"SELECT * FROM positions WHERE account_id = {self.param_style}", (account_id,))
@@ -435,7 +435,7 @@ class TradingDB:
         finally:
             cursor.close()
 
-    def get_order_history(self, account_id: int) -> List[Dict[str, Any]]:
+    def get_order_history(self, account_id: int) -> list[dict[str, Any]]:
         cursor = self.get_cursor()
         try:
             cursor.execute(f"SELECT * FROM orders WHERE account_id = {self.param_style} ORDER BY timestamp DESC", (account_id,))
@@ -443,7 +443,7 @@ class TradingDB:
         finally:
             cursor.close()
 
-    def get_trade_history(self, account_id: int, limit: int = 50, offset: int = 0, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_trade_history(self, account_id: int, limit: int = 50, offset: int = 0, start_date: Optional[str] = None, end_date: Optional[str] = None) -> list[dict[str, Any]]:
         cursor = self.get_cursor()
         try:
             query = "SELECT order_id, account_id, symbol, order_type, quantity, price, timestamp FROM orders WHERE account_id = ? AND status = 'executed'"
@@ -488,7 +488,7 @@ class TradingDB:
         finally:
             cursor.close()
 
-    def get_price_history(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> List[Dict[str, Any]]:
+    def get_price_history(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> list[dict[str, Any]]:
         # Note: timeframe is not used in this MVP implementation.
         # A real implementation would require time-series aggregation logic.
         cursor = self.get_cursor()
@@ -521,7 +521,7 @@ class TradingDB:
         finally:
             cursor.close()
 
-    def get_portfolio_metrics(self, account_id: int) -> Optional[Dict[str, Any]]:
+    def get_portfolio_metrics(self, account_id: int) -> Optional[dict[str, Any]]:
         cash_balance = self.get_account_balance(account_id)
         if cash_balance is None:
             return None

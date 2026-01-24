@@ -3,7 +3,6 @@ from typing import Literal, Optional
 from decimal import Decimal
 from uuid import UUID
 import datetime
-from typing import List
 
 class CustomBaseModel(BaseModel):
     class Config:
