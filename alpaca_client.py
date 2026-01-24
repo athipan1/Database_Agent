@@ -1,19 +1,23 @@
 import os
 import logging
 from datetime import datetime, timedelta
-import alpaca_trade_api as tradeapi
-from alpaca_trade_api.rest import TimeFrame
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from dotenv import load_dotenv
 
 class AlpacaClient:
     """
     A client for interacting with the Alpaca API, with built-in retry logic.
+    This client uses the modern alpaca-py library.
     """
     def __init__(self, api_key: str, secret_key: str):
         if not api_key or not secret_key:
             raise ValueError("API key and secret key cannot be empty.")
-        self.api = tradeapi.REST(api_key, secret_key, base_url='https://paper-api.alpaca.markets')
-        logging.info("Alpaca API client initialized for paper trading.")
+        # sandbox=True is used for paper trading
+        self.client = StockHistoricalDataClient(api_key, secret_key, sandbox=True)
+        logging.info("Alpaca API client (alpaca-py) initialized for paper trading.")
 
     @retry(
         stop=stop_after_attempt(3),
@@ -24,13 +28,13 @@ class AlpacaClient:
             f"Attempt #{retry_state.attempt_number}..."
         )
     )
-    def fetch_historical_prices(self, symbol: str, timeframe: str, start_date: str, end_date: str):
+    def fetch_historical_prices(self, symbol: str, timeframe_str: str, start_date: str, end_date: str):
         """
         Fetches historical OHLCV data from Alpaca for a given symbol and timeframe.
 
         Args:
             symbol (str): The stock symbol (e.g., 'GOOG').
-            timeframe (str): The timeframe for the bars ('4h', '1d').
+            timeframe_str (str): The timeframe for the bars ('4h', '1d').
             start_date (str): The start date in 'YYYY-MM-DD' format.
             end_date (str): The end date in 'YYYY-MM-DD' format.
 
@@ -38,52 +42,54 @@ class AlpacaClient:
             list[dict]: A list of dictionaries, where each dictionary represents a price bar.
                         Returns an empty list if there's an error or no data.
         """
-        logging.info(f"Fetching historical data for {symbol} with timeframe {timeframe} from {start_date} to {end_date}.")
+        logging.info(f"Fetching historical data for {symbol} with timeframe {timeframe_str} from {start_date} to {end_date}.")
         try:
             # Map our string timeframe to the Alpaca SDK's Enum
             timeframe_map = {
-                '4h': TimeFrame.Hour, # Note: Alpaca API might not support 4H directly, will need adjustment if so.
+                '4h': TimeFrame.Hour, # Note: Alpaca API might not support 4H directly.
                 '1d': TimeFrame.Day,
             }
-            if timeframe.lower() == '4h':
+            if timeframe_str.lower() == '4h':
                 # Alpaca's get_bars doesn't directly support '4H'.
-                # A common workaround is to fetch 1H data and resample, but for simplicity,
-                # we'll log a warning and fetch '1H' data instead for now.
+                # We fetch '1H' data as a workaround.
                 logging.warning("Alpaca API does not directly support '4H' timeframe. Fetching '1H' data instead.")
                 alpaca_timeframe = TimeFrame.Hour
-            elif timeframe.lower() == '1d':
+            elif timeframe_str.lower() == '1d':
                  alpaca_timeframe = TimeFrame.Day
             else:
-                logging.error(f"Unsupported timeframe: {timeframe}")
+                logging.error(f"Unsupported timeframe: {timeframe_str}")
                 return []
 
-
-            bars = self.api.get_bars(
-                symbol,
-                alpaca_timeframe,
+            request_params = StockBarsRequest(
+                symbol_or_symbols=[symbol],
+                timeframe=alpaca_timeframe,
                 start=start_date,
-                end=end_date,
-                adjustment='raw'
-            ).df
+                end=end_date
+            )
+
+            bars = self.client.get_stock_bars(request_params).df
 
             if bars.empty:
                 logging.warning(f"No data returned for {symbol} in the given date range.")
                 return []
 
+            # Data comes in a multi-index DataFrame, reset index to work with it
+            bars.reset_index(inplace=True)
+
             # Rename columns to match our database schema
             bars.rename(columns={
-                'o': 'open',
-                'h': 'high',
-                'l': 'low',
-                'c': 'close',
-                'v': 'volume'
+                'symbol': 'symbol_col', # Avoid clash with our own 'symbol'
+                'timestamp': 'timestamp_col',
+                'open': 'open',
+                'high': 'high',
+                'low': 'low',
+                'close': 'close',
+                'volume': 'volume'
             }, inplace=True)
 
-            # Add symbol and timeframe, and format for database insertion
+            # Format for database insertion
             bars['symbol'] = symbol
-            bars['timeframe'] = timeframe
-            bars.reset_index(inplace=True) # Convert timestamp index to column
-            bars = bars.rename(columns={'timestamp': 'timestamp_col'}) # Avoid name clash
+            bars['timeframe'] = timeframe_str
             bars['timestamp'] = bars['timestamp_col'].apply(lambda ts: ts.isoformat())
 
             # Select and reorder columns
@@ -96,10 +102,7 @@ class AlpacaClient:
 
         except Exception as e:
             logging.error(f"Failed to fetch historical data for {symbol}: {e}", exc_info=True)
-            # The retry decorator will handle retrying. If all retries fail, it will re-raise.
             raise
-
-from dotenv import load_dotenv
 
 # Example usage:
 if __name__ == '__main__':

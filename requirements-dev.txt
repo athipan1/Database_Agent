@@ -1,6 +1,6 @@
 pytest
 httpx
-alpaca-trade-api
+alpaca-py
 tenacity
 schedule
-urllib3==1.26.18
+pytz
