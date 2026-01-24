@@ -1,3 +1,22 @@
+# Python
 __pycache__/
-.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-selfcheck.json
+
+# Dependencies
 .env
+.venv
+*.egg-info/
+pip-wheel-metadata/
+
+# Database
+trading.db
+
+# IDEs
+.idea/
+.vscode/

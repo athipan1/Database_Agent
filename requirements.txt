@@ -1,6 +1,6 @@
-# Added for API
-fastapi
-uvicorn[standard]
-python-dotenv
-pydantic
+alpaca-py
+sqlalchemy>=2.0
 psycopg2-binary
+pandas
+python-dotenv
+tenacity
