@@ -2,7 +2,11 @@ import os
 import logging
 import sys
 import uuid
+import schedule
+import time
+import threading
 from contextvars import ContextVar
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Security, Request
 from fastapi.security import APIKeyHeader
@@ -11,6 +15,7 @@ from typing import Optional
 from decimal import Decimal
 
 from trading_db import TradingDB
+from alpaca_client import AlpacaClient
 from models import (
     AccountBalance, Position, Order, CreateOrderBody, CreateOrderResponse,
     OrderExecutionResponse, Trade, PortfolioMetrics, Price
@@ -82,26 +87,74 @@ def get_api_key(api_key_header: str = Security(api_key_header)):
 # This single instance will be shared across all requests.
 db = TradingDB()
 
+# Alpaca API Client
+alpaca_client = AlpacaClient(
+    api_key=os.environ.get("ALPACA_API_KEY"),
+    secret_key=os.environ.get("ALPACA_SECRET_KEY")
+)
+
+# --- Scheduled Jobs ---
+def run_ingestion_job():
+    """
+    Defines the scheduled job to fetch and ingest historical data.
+    """
+    logging.info("Scheduler starting historical data ingestion job...")
+    symbols_to_fetch = ["GOOG"]
+    timeframes_to_fetch = ["4h", "1d"]
+
+    # Calculate date range for the last 2 years
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=2*365)).strftime('%Y-%m-%d')
+
+    for symbol in symbols_to_fetch:
+        for timeframe in timeframes_to_fetch:
+            try:
+                price_data = alpaca_client.fetch_historical_prices(
+                    symbol, timeframe, start_date, end_date
+                )
+                if price_data:
+                    db.ingest_historical_prices(price_data)
+                else:
+                    logging.warning(f"No price data to ingest for {symbol} ({timeframe}).")
+            except Exception as e:
+                # Log the error but continue to the next symbol/timeframe
+                logging.error(f"Failed to ingest data for {symbol} ({timeframe}): {e}", exc_info=True)
+
+    logging.info("Scheduler finished historical data ingestion job.")
+
+def run_scheduler():
+    """
+    Continuously runs pending scheduled jobs.
+    """
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
 # --- Events ---
 @app.on_event("startup")
 async def startup_event():
-    """Ensure the database and tables are created on application startup."""
+    """Ensure the database and tables are created and start the scheduler."""
     logging.info("Database Agent API starting up.")
     try:
-        # The TradingDB __init__ now ensures the DB exists.
-        # This call ensures the tables exist.
         db.setup_database()
         logging.info("Database tables verification/creation complete.")
+
+        # Schedule the job
+        schedule.every().day.at("00:00").do(run_ingestion_job)
+        logging.info("Scheduled data ingestion job to run daily at 00:00.")
+
+        # Run the scheduler in a background thread
+        scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+        scheduler_thread.start()
+        logging.info("Scheduler started in a background thread.")
+
     except Exception as e:
-        logging.critical(f"FATAL: Database table setup failed on startup: {e}", exc_info=True)
-        # In a real-world scenario, you might want the app to fail fast
-        # if the database is not ready.
+        logging.critical(f"FATAL: Application startup failed: {e}", exc_info=True)
         raise
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logging.info("Database Agent API shutting down.")
-    # The db connection is closed automatically by the TradingDB destructor.
 
 # --- API Endpoints ---
 

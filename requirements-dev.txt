@@ -1,2 +1,6 @@
 pytest
 httpx
+alpaca-py
+tenacity
+schedule
+pytz
