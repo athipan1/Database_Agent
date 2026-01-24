@@ -7,3 +7,4 @@ psycopg2-binary
 alpaca-trade-api
 tenacity
 schedule
+urllib3==1.26.16
