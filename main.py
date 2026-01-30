@@ -18,7 +18,7 @@ from trading_db import TradingDB
 from alpaca_client import AlpacaClient
 from models import (
     AccountBalance, Position, Order, CreateOrderBody, CreateOrderResponse,
-    OrderExecutionResponse, Trade, PortfolioMetrics, Price
+    OrderExecutionResponse, ExecutionTrade, Price
 )
 
 # --- Context setup for Correlation ID ---
@@ -244,8 +244,8 @@ async def execute_existing_order(order_id: int, api_key: str = Depends(get_api_k
         raise HTTPException(status_code=500, detail="An unexpected internal server error occurred.")
 
 
-@app.get("/accounts/{account_id}/trade_history", response_model=list[Trade])
-async def get_trade_history_for_account(
+@app.get("/accounts/{account_id}/executions", response_model=list[ExecutionTrade])
+async def get_execution_history_for_account(
     account_id: int,
     limit: int = 50,
     offset: int = 0,
@@ -255,18 +255,9 @@ async def get_trade_history_for_account(
     correlation_id: str = Depends(get_correlation_id)
 ):
     """Retrieves the executed trade history for a specific account with optional filters."""
-    logging.info(f"Request to get trade history for account {account_id}.")
-    trades = db.get_trade_history(account_id, limit, offset, start_date, end_date)
+    logging.info(f"Request to get execution history for account {account_id}.")
+    trades = db.get_executions(account_id, limit, offset, start_date, end_date)
     return trades
-
-@app.get("/accounts/{account_id}/portfolio_metrics", response_model=PortfolioMetrics)
-async def get_portfolio_metrics_for_account(account_id: int, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    """Retrieves portfolio metrics for a specific account."""
-    logging.info(f"Request to get portfolio metrics for account {account_id}.")
-    metrics = db.get_portfolio_metrics(account_id)
-    if metrics is None:
-        raise HTTPException(status_code=404, detail="Account not found")
-    return metrics
 
 @app.get("/prices/{symbol}", response_model=list[Price])
 async def get_price_history_for_symbol(
