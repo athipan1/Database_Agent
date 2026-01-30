@@ -444,7 +444,7 @@ class TradingDB:
         finally:
             cursor.close()
 
-    def get_trade_history(self, account_id: int, limit: int = 50, offset: int = 0, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_executions(self, account_id: int, limit: int = 50, offset: int = 0, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
         cursor = self.get_cursor()
         try:
             query = "SELECT order_id, account_id, symbol, order_type, quantity, price, timestamp FROM orders WHERE account_id = ? AND status = 'executed'"
@@ -511,16 +511,6 @@ class TradingDB:
         finally:
             cursor.close()
 
-    def _get_latest_price(self, symbol: str) -> Optional[Decimal]:
-        cursor = self.get_cursor()
-        try:
-            query = f"SELECT close FROM prices WHERE symbol = {self.param_style} ORDER BY timestamp DESC LIMIT 1"
-            cursor.execute(query, (symbol.upper(),))
-            result = cursor.fetchone()
-            return self._to_decimal(result['close']) if result else None
-        finally:
-            cursor.close()
-
     def ingest_historical_prices(self, price_data: List[Dict[str, Any]]):
         """
         Ingests a list of historical price data points into the database.
@@ -563,57 +553,3 @@ class TradingDB:
         finally:
             cursor.close()
 
-    def get_portfolio_metrics(self, account_id: int) -> Optional[Dict[str, Any]]:
-        cash_balance = self.get_account_balance(account_id)
-        if cash_balance is None:
-            return None
-
-        positions_list = self.get_positions(account_id)
-
-        total_market_value = Decimal('0')
-        total_unrealized_pnl = Decimal('0')
-        positions_metrics = []
-
-        for pos in positions_list:
-            symbol = pos['symbol']
-            quantity = pos['quantity']
-            avg_cost = self._to_decimal(pos['average_cost'])
-
-            market_price = self._get_latest_price(symbol)
-            if market_price is None:
-                # If no price is available, we can't value this position.
-                # Skip it or use a default value. Here we skip.
-                continue
-
-            market_value = quantity * market_price
-            unrealized_pnl = (market_price - avg_cost) * quantity
-
-            total_market_value += market_value
-            total_unrealized_pnl += unrealized_pnl
-
-            positions_metrics.append({
-                "symbol": symbol,
-                "quantity": quantity,
-                "avg_cost": avg_cost,
-                "market_price": market_price,
-                "market_value": market_value,
-                "unrealized_pnl": unrealized_pnl,
-                 # NOTE: asset_id not in current schema
-                "asset_id": None
-            })
-
-        total_portfolio_value = cash_balance + total_market_value
-
-        # NOTE: Realized PnL calculation is complex and requires full transaction history analysis.
-        # Returning 0.00 for this MVP.
-        realized_pnl = Decimal('0.00')
-
-        return {
-            "account_id": account_id,
-            "as_of": datetime.now(timezone.utc).isoformat(),
-            "total_portfolio_value": total_portfolio_value,
-            "cash_balance": cash_balance,
-            "unrealized_pnl": total_unrealized_pnl,
-            "realized_pnl": realized_pnl,
-            "positions": positions_metrics
-        }

@@ -48,7 +48,7 @@ class OrderExecutionResponse(CustomBaseModel):
     status: Literal["executed", "failed"]
     reason: Optional[str] = None
 
-class Trade(CustomBaseModel):
+class ExecutionTrade(CustomBaseModel):
     trade_id: int
     account_id: int
     asset_id: Optional[str] = None
@@ -59,24 +59,6 @@ class Trade(CustomBaseModel):
     notional: Decimal
     executed_at: str
     source_agent: Optional[str] = None
-
-class PositionMetrics(CustomBaseModel):
-    asset_id: Optional[str] = None
-    symbol: str
-    quantity: int
-    avg_cost: Decimal
-    market_price: Decimal
-    market_value: Decimal
-    unrealized_pnl: Decimal
-
-class PortfolioMetrics(CustomBaseModel):
-    account_id: int
-    as_of: str
-    total_portfolio_value: Decimal
-    cash_balance: Decimal
-    unrealized_pnl: Decimal
-    realized_pnl: Decimal
-    positions: list[PositionMetrics]
 
 class Price(CustomBaseModel):
     symbol: str
