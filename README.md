@@ -1,88 +1,110 @@
 # Database Agent
 
-The Database Agent is a FastAPI-based service responsible for managing all database interactions for the trading system. It provides a secure and transactional API for logging decisions, tracking outcomes, and serving data to other agents like the `LearningAgent`.
+Database Agent เป็นบริการหลักในระบบเทรด (Trading System) ที่พัฒนาด้วย FastAPI โดยทำหน้าที่จัดการการโต้ตอบกับฐานข้อมูลทั้งหมด เป็นแหล่งเก็บข้อมูลกลาง (Single Source of Truth) ที่มีความปลอดภัยสูงและรองรับการทำ Transaction ที่ซับซ้อน เพื่อให้มั่นใจในความถูกต้องและตรวจสอบได้ของข้อมูลการเทรดทั้งหมด
 
-## Core Responsibilities
+## ความรับผิดชอบหลัก
 
-1.  **Decision Logging**: Records every `buy`/`sell`/`hold` decision from all trading agents, linking them with a unique `correlation_id` for end-to-end traceability.
-2.  **Outcome Tracking**: Stores the actual results of trades, such as profit/loss and drawdown over various time horizons (e.g., t+1, t+7, t+30).
-3.  **Data Source for Learning**: Acts as the single source of truth for the `LearningAgent` to evaluate agent performance, calculate rewards/penalties, and adjust agent weights.
-4.  **System Auditing**: Provides a complete audit trail. A single `correlation_id` can be used to trace an entire decision and execution chain, simplifying debugging and enhancing explainability.
+1. **การบันทึกการตัดสินใจ (Decision Logging):** บันทึกทุกคำสั่งซื้อขายและสถานะ เพื่อใช้ในการวิเคราะห์ย้อนหลังและรักษาระดับ Traceability
+2. **การติดตามผลลัพธ์ (Outcome Tracking):** จัดเก็บผลการดำเนินงานจริงจากการเทรด เพื่อนำไปคำนวณกำไร/ขาดทุน และ Drawdown
+3. **แหล่งข้อมูลสำหรับการเรียนรู้ (Data Source for Learning):** ให้บริการข้อมูลราคาประวัติศาสตร์และผลการเทรดแก่ Learning Agent เพื่อใช้ประเมินประสิทธิภาพและปรับปรุงกลยุทธ์
+4. **การตรวจสอบระบบ (System Auditing):** สร้าง Audit Trail ที่สมบูรณ์ผ่านระบบ Ledger เพื่อติดตามทุกความเคลื่อนไหวของเงินและสินทรัพย์ในระดับ Transaction
 
 ---
 
-## Getting Started
+## รายละเอียดการทำงานเชิงลึก
 
-This guide will walk you through setting up and running the Database Agent using Docker and Docker Compose.
+### 1. ระบบ Traceability และ Security
+* **Correlation ID Middleware:** ระบบจะแนบ `X-Correlation-ID` ไปกับทุก Log และ Response Header ทำให้สามารถติดตามเส้นทางการทำงานของแต่ละ Request ได้อย่างแม่นยำแม้ในระบบที่มีการทำงานแบบขนานหรือ Distributed
+* **API Key Protection:** ปกป้องข้อมูลสำคัญด้วยการตรวจสอบ API Key ผ่าน Header `X-API-KEY` เพื่ออนุญาตเฉพาะเอเจนต์ที่ได้รับสิทธิ์เท่านั้น โดยมีการตั้งค่าผ่านสภาพแวดล้อม (Environment Variable)
 
-### Prerequisites
+### 2. การจัดการ Transaction (ACID Properties)
+* **Atomic Order Execution:** ในขั้นตอนการรันคำสั่งซื้อขาย (`execute_order`) ระบบจะทำงานภายใน Database Transaction ชุดเดียวแบบ Atomic โดยจะครอบคลุมขั้นตอน:
+    - ตรวจสอบยอดเงินหรือจำนวนสินทรัพย์ที่พร้อมเทรด
+    - หักเงินหรือสินทรัพย์จากบัญชี
+    - อัปเดตพอร์ตการลงทุน (Positions)
+    - บันทึกประวัติการเปลี่ยนแปลงลงใน Ledger
+    - อัปเดตสถานะคำสั่งซื้อขายเป็น `executed`
+  หากขั้นตอนใดขั้นตอนหนึ่งล้มเหลว ระบบจะทำการ Rollback ทั้งหมดเพื่อป้องกันข้อมูลผิดเพี้ยน
+* **Concurrency Control:** ใช้ระบบ Row-level Locking (`FOR UPDATE` ใน PostgreSQL หรือ `BEGIN IMMEDIATE` ใน SQLite) เพื่อป้องกันปัญหา Race Condition เมื่อมีการรันหลายรายการพร้อมกันในบัญชีเดียว
 
-*   Docker
-*   Docker Compose
+### 3. ระบบนำเข้าข้อมูลอัตโนมัติ (Background Scheduler)
+* **Historical Data Ingestion:** มีระบบ Scheduler ที่ทำงานเป็น Thread แยกอยู่เบื้องหลัง เพื่อดึงข้อมูลราคา (OHLCV) จาก Alpaca API โดยอัตโนมัติตามช่วงเวลาที่กำหนด (เช่น ทุกเที่ยงคืน)
+* **Reliability:** ใช้ระบบ Retry แบบ Exponential Backoff (ผ่าน `tenacity`) เมื่อการเชื่อมต่อกับ API ภายนอกขัดข้อง และใช้กลยุทธ์ `UPSERT` (On Conflict Do Nothing) เพื่อป้องกันการบันทึกข้อมูลราคาซ้ำซ้อนในฐานข้อมูล
 
-### 1. Set Up Environment Variables
+---
 
-The service is configured using environment variables. First, create a `.env` file by copying the example file:
+## รายละเอียด API Endpoint
 
-```bash
-cp .env.example .env
-```
+### การจัดการบัญชีและสินทรัพย์
+* **`GET /accounts/{account_id}/balance`**: ดึงยอดเงินสดคงเหลือปัจจุบันของบัญชี
+* **`GET /accounts/{account_id}/positions`**: ดึงรายการสินทรัพย์ที่ถือครองอยู่ทั้งหมด พร้อมจำนวนและราคาต้นทุนเฉลี่ย
+* **`GET /accounts/{account_id}/executions`**: ดึงประวัติรายการเทรดที่รันสำเร็จแล้ว (Executed Trades) สามารถระบุช่วงวันที่ (start_date, end_date) ได้
 
-Next, open the `.env` file and customize the variables:
+### การจัดการคำสั่งซื้อขาย
+* **`GET /accounts/{account_id}/orders`**: ดูประวัติคำสั่งซื้อขายทั้งหมดของบัญชี (รวมถึงสถานะ pending, executed, failed)
+* **`POST /accounts/{account_id}/orders`**: สร้างคำสั่งซื้อขายใหม่ในสถานะ 'pending' โดยรองรับการใช้ `client_order_id` เพื่อความปลอดภัยในการเรียกซ้ำ (Idempotency)
+* **`POST /orders/{order_id}/execute`**: สั่งประมวลผลคำสั่งซื้อขายที่ค้างอยู่จริง เป็น Endpoint หลักที่ทำการหักลบยอดเงินและอัปเดตพอร์ตการลงทุน
 
-*   `POSTGRES_PASSWORD`: **(Required)** Set a strong and unique password for the PostgreSQL database. This is used by the database container itself.
-*   `DATABASE_URL`: **(Required)** Update the password in this URL to match the `POSTGRES_PASSWORD` you set above. This is the full connection string the application uses.
-*   `DATABASE_AGENT_API_KEY`: **(Required)** Generate a secure, random API key that clients will use to authenticate with this service. You can generate one with `openssl rand -hex 32`.
+### ข้อมูลตลาด
+* **`GET /prices/{symbol}`**: ดึงข้อมูลราคาประวัติศาสตร์ (OHLCV) จากฐานข้อมูลกลาง
 
-**Example `.env` file:**
+---
 
-```ini
-# PostgreSQL Database Configuration
-POSTGRES_USER=trading_user
-POSTGRES_PASSWORD=your_super_secret_password
-POSTGRES_DB=trading_db
-POSTGRES_HOST=db
-POSTGRES_PORT=5432
+## โครงสร้างข้อมูล (Data Schemas)
 
-# Application Configuration
-DATABASE_URL=postgresql://trading_user:your_super_secret_password@db:5432/trading_db
+### AccountBalance
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `cash_balance` | Decimal | ยอดเงินสดคงเหลือในบัญชี |
 
-# API Security Configuration
-DATABASE_AGENT_API_KEY=your_generated_api_key_here
-```
+### Position
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `symbol` | str | ชื่อสัญลักษณ์สินทรัพย์ (Ticker Symbol) |
+| `quantity` | int | จำนวนหน่วยที่ถือครอง |
+| `average_cost` | Decimal | ราคาต้นทุนเฉลี่ยต่อหน่วย (ใช้ในการคำนวณ PnL) |
 
-### 2. Build and Run the Service
+### Order
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `order_id` | int | ID ภายในระบบของคำสั่งซื้อขาย |
+| `client_order_id` | UUID | ID ที่ทาง Client กำหนด เพื่อใช้อ้างอิงและป้องกันรายการซ้ำ |
+| `symbol` | str | ชื่อสัญลักษณ์สินทรัพย์ |
+| `order_type` | str | ประเภทการสั่ง: `BUY` (ซื้อ) หรือ `SELL` (ขาย) |
+| `quantity` | int | จำนวนหน่วยที่ต้องการเทรด |
+| `price` | Decimal | ราคาต่อหน่วยที่ระบุในคำสั่ง |
+| `status` | str | สถานะปัจจุบัน: `pending`, `executed`, `cancelled`, `failed` |
+| `failure_reason` | str | ระบุสาเหตุหากคำสั่งซื้อขายล้มเหลว (เช่น insufficient_funds) |
+| `timestamp` | datetime | วันเวลาที่ระบบได้รับคำสั่งซื้อขาย |
 
-With the `.env` file configured, you can start the entire stack (the API service and the PostgreSQL database) using Docker Compose:
+### CreateOrderBody
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `client_order_id` | UUID (optional) | ID สำหรับตรวจสอบรายการซ้ำ หากไม่ระบุระบบจะสร้างให้ใหม่ |
+| `symbol` | str | ชื่อสัญลักษณ์สินทรัพย์ที่ต้องการเทรด |
+| `order_type` | str | ประเภท: `BUY` หรือ `SELL` |
+| `quantity` | int | จำนวนหน่วยที่ต้องการเทรด |
+| `price` | Decimal | ราคาต่อหน่วยที่ต้องการ |
 
-```bash
-sudo docker compose up --build -d
-```
+### ExecutionTrade
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `trade_id` | int | ID ของรายการเทรดที่เกิดขึ้นจริง |
+| `account_id` | int | ID ของบัญชีที่ทำรายการ |
+| `symbol` | str | ชื่อสัญลักษณ์สินทรัพย์ |
+| `side` | str | ด้านที่เทรด: `buy` หรือ `sell` |
+| `quantity` | int | จำนวนที่เทรดได้จริง |
+| `price` | Decimal | ราคาที่ใช้ในการเทรดจริง |
+| `notional` | Decimal | มูลค่ารวมของรายการเทรด (price * quantity) |
+| `executed_at` | str | วันและเวลาที่รายการสำเร็จในฐานข้อมูล |
 
-*   `--build`: Forces a rebuild of the Docker image to ensure your latest code changes are included.
-*   `-d`: Runs the containers in detached mode (in the background).
-
-### 3. Verify the Service
-
-You can check if the service is running correctly in a few ways:
-
-*   **Check container status:**
-    ```bash
-    sudo docker compose ps
-    ```
-    You should see both the `trading_db_api` and `trading_db_postgres` containers running with a "healthy" status.
-
-*   **View logs:**
-    ```bash
-    sudo docker compose logs -f api
-    ```
-    This will show you the real-time logs for the API service. Look for a message indicating a successful connection to the PostgreSQL database.
-
-*   **Access the health check endpoint:**
-    ```bash
-    curl http://localhost:8000/health
-    ```
-    If the service is running correctly, you will receive the following response:
-    ```json
-    {"status":"ok"}
-    ```
+### Price
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `symbol` | str | ชื่อสัญลักษณ์สินทรัพย์ |
+| `timestamp` | str | วันเวลาของแท่งราคา (ISO Format) |
+| `open` | Decimal | ราคาเปิด |
+| `high` | Decimal | ราคาสูงสุด |
+| `low` | Decimal | ราคาต่ำสุด |
+| `close` | Decimal | ราคาปิด |
+| `volume` | int | ปริมาณการซื้อขายรวม |
