@@ -147,6 +147,18 @@ class TradingDB:
             # sqlite3.Row objects are similar enough to DictCursor for this project
             return self.conn.cursor()
 
+    def check_connection(self) -> bool:
+        """Checks if the database connection is alive."""
+        try:
+            cursor = self.get_cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            cursor.close()
+            return True
+        except Exception as e:
+            logging.error(f"Database connection check failed: {e}")
+            return False
+
     def _to_decimal(self, value: Any) -> Optional[Decimal]:
         """Converts a database value (potentially string from SQLite) to Decimal."""
         if value is None:

@@ -6,19 +6,20 @@ import schedule
 import time
 import threading
 from contextvars import ContextVar
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Security, Request
 from fastapi.security import APIKeyHeader
+from fastapi.responses import JSONResponse
 from starlette.responses import Response
-from typing import Optional
+from typing import Optional, Any, TypeVar, Generic, List
 from decimal import Decimal
 
 from trading_db import TradingDB
 from alpaca_client import AlpacaClient
 from models import (
     AccountBalance, Position, Order, CreateOrderBody, CreateOrderResponse,
-    OrderExecutionResponse, ExecutionTrade, Price
+    OrderExecutionResponse, ExecutionTrade, Price, StandardResponse, ErrorDetail
 )
 
 # --- Context setup for Correlation ID ---
@@ -69,6 +70,17 @@ async def get_correlation_id() -> str:
     """Dependency to get the correlation ID from the context variable."""
     return correlation_id_var.get()
 
+
+def wrap_response(data: Any = None, status: str = "success", error: Optional[ErrorDetail] = None):
+    """Wraps the data into a standard response format."""
+    return {
+        "status": status,
+        "agent_type": "database",
+        "version": "1.0",
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "data": data,
+        "error": error
+    }
 
 # API Key Security
 DATABASE_AGENT_API_KEY = os.environ.get("DATABASE_AGENT_API_KEY")
@@ -156,39 +168,74 @@ async def startup_event():
 async def shutdown_event():
     logging.info("Database Agent API shutting down.")
 
+# --- Exception Handlers ---
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=wrap_response(
+            status="error",
+            error={
+                "code": str(exc.status_code),
+                "message": exc.detail,
+                "retryable": False
+            }
+        )
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    logging.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content=wrap_response(
+            status="error",
+            error={
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": str(exc),
+                "retryable": False
+            }
+        )
+    )
+
 # --- API Endpoints ---
 
-@app.get("/health")
+@app.get("/health", response_model=StandardResponse[dict])
 async def health_check():
     """Simple health check endpoint."""
     logging.info("Health check endpoint was called.")
-    return {"status": "ok"}
+    is_connected = db.check_connection()
+    health_data = {
+        "status": "healthy" if is_connected else "unhealthy",
+        "database_connection": "connected" if is_connected else "disconnected"
+    }
+    return wrap_response(data=health_data)
 
 
-@app.get("/accounts/{account_id}/balance", response_model=AccountBalance)
+@app.get("/accounts/{account_id}/balance", response_model=StandardResponse[AccountBalance])
 async def get_balance(account_id: int, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """Retriees the cash balance for a specific account."""
     logging.info(f"Request to get balance for account {account_id}.")
     balance = db.get_account_balance(account_id)
     if balance is None:
-        raise HTTPException(status_code=404, detail="Account not found")
-    return AccountBalance(cash_balance=balance)
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found")
+    return wrap_response(data=AccountBalance(cash_balance=balance))
 
-@app.get("/accounts/{account_id}/positions", response_model=list[Position])
+@app.get("/accounts/{account_id}/positions", response_model=StandardResponse[List[Position]])
 async def get_positions_for_account(account_id: int, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """Retrieves all positions for a specific account."""
     logging.info(f"Request to get positions for account {account_id}.")
     positions = db.get_positions(account_id)
-    return positions
+    return wrap_response(data=positions)
 
-@app.get("/accounts/{account_id}/orders", response_model=list[Order])
+@app.get("/accounts/{account_id}/orders", response_model=StandardResponse[List[Order]])
 async def get_order_history_for_account(account_id: int, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """Retrieves the complete order history for a specific account."""
     logging.info(f"Request to get order history for account {account_id}.")
     orders = db.get_order_history(account_id)
-    return orders
+    return wrap_response(data=orders)
 
-@app.post("/accounts/{account_id}/orders", response_model=CreateOrderResponse, status_code=201)
+@app.post("/accounts/{account_id}/orders", response_model=StandardResponse[CreateOrderResponse], status_code=201)
 async def create_new_order(account_id: int, order_body: CreateOrderBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """
     Creates a new trade order with a 'pending' status.
@@ -213,13 +260,13 @@ async def create_new_order(account_id: int, order_body: CreateOrderBody, api_key
     if order_id is None:
         raise HTTPException(status_code=500, detail="Failed to create order due to a database error.")
 
-    return CreateOrderResponse(
+    return wrap_response(data=CreateOrderResponse(
         order_id=order_id,
         status="pending",
         client_order_id=client_order_id
-    )
+    ))
 
-@app.post("/orders/{order_id}/execute", response_model=OrderExecutionResponse)
+@app.post("/orders/{order_id}/execute", response_model=StandardResponse[OrderExecutionResponse])
 async def execute_existing_order(order_id: int, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """
     Executes a pending order. This is the core transactional endpoint.
@@ -231,11 +278,11 @@ async def execute_existing_order(order_id: int, api_key: str = Depends(get_api_k
         # The execute_order method is now fully atomic and returns the outcome.
         status, reason = db.execute_order(order_id)
 
-        return OrderExecutionResponse(
+        return wrap_response(data=OrderExecutionResponse(
             order_id=order_id,
             status=status,
             reason=reason
-        )
+        ))
 
     except Exception as e:
         # This catch block is for unexpected system/database errors.
@@ -244,7 +291,7 @@ async def execute_existing_order(order_id: int, api_key: str = Depends(get_api_k
         raise HTTPException(status_code=500, detail="An unexpected internal server error occurred.")
 
 
-@app.get("/accounts/{account_id}/executions", response_model=list[ExecutionTrade])
+@app.get("/accounts/{account_id}/executions", response_model=StandardResponse[List[ExecutionTrade]])
 async def get_execution_history_for_account(
     account_id: int,
     limit: int = 50,
@@ -257,9 +304,9 @@ async def get_execution_history_for_account(
     """Retrieves the executed trade history for a specific account with optional filters."""
     logging.info(f"Request to get execution history for account {account_id}.")
     trades = db.get_executions(account_id, limit, offset, start_date, end_date)
-    return trades
+    return wrap_response(data=trades)
 
-@app.get("/prices/{symbol}", response_model=list[Price])
+@app.get("/prices/{symbol}", response_model=StandardResponse[List[Price]])
 async def get_price_history_for_symbol(
     symbol: str,
     timeframe: str = '1h',
@@ -272,4 +319,4 @@ async def get_price_history_for_symbol(
     prices = db.get_price_history(symbol, timeframe, limit)
     if not prices:
         raise HTTPException(status_code=404, detail=f"No price data found for symbol {symbol}")
-    return prices
+    return wrap_response(data=prices)
