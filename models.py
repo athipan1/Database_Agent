@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Literal, Optional
+from typing import Literal, Optional, Any, TypeVar, Generic
 from decimal import Decimal
 from uuid import UUID
 import datetime
@@ -10,6 +10,21 @@ class CustomBaseModel(BaseModel):
         json_encoders = {
             datetime.datetime: lambda v: v.isoformat()
         }
+
+class ErrorDetail(BaseModel):
+    code: str
+    message: str
+    retryable: bool
+
+T = TypeVar("T")
+
+class StandardResponse(CustomBaseModel, Generic[T]):
+    status: Literal["success", "error"]
+    agent_type: str = "database"
+    version: str = "1.0"
+    timestamp: str
+    data: Optional[T] = None
+    error: Optional[ErrorDetail] = None
 
 class AccountBalance(CustomBaseModel):
     cash_balance: Decimal
