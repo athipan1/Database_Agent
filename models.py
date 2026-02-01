@@ -1,9 +1,8 @@
 from pydantic import BaseModel, Field
-from typing import Literal, Optional, Any, TypeVar, Generic
+from typing import Literal, Optional, Any, TypeVar, Generic, List, Union
 from decimal import Decimal
 from uuid import UUID
 import datetime
-from typing import List
 
 class CustomBaseModel(BaseModel):
     class Config:
@@ -24,7 +23,7 @@ class StandardResponse(CustomBaseModel, Generic[T]):
     version: str = "1.0"
     timestamp: str
     data: Optional[T] = None
-    error: Optional[ErrorDetail] = None
+    error: Optional[dict] = None
 
 class AccountBalance(CustomBaseModel):
     cash_balance: Decimal
@@ -35,7 +34,7 @@ class Position(CustomBaseModel):
     average_cost: Decimal
 
 class Order(CustomBaseModel):
-    order_id: int
+    order_id: Union[int, str]
     client_order_id: UUID
     symbol: str
     order_type: Literal["BUY", "SELL"]
@@ -53,19 +52,20 @@ class CreateOrderBody(CustomBaseModel):
     price: Decimal
 
 class CreateOrderResponse(CustomBaseModel):
-    order_id: int
+    order_id: Union[int, str]
     status: str
     client_order_id: UUID
+    reason: Optional[str] = None
 
 
 class OrderExecutionResponse(CustomBaseModel):
-    order_id: int
+    order_id: Union[int, str]
     status: Literal["executed", "failed"]
     reason: Optional[str] = None
 
 class ExecutionTrade(CustomBaseModel):
-    trade_id: int
-    account_id: int
+    trade_id: Union[int, str]
+    account_id: Union[int, str]
     asset_id: Optional[str] = None
     symbol: str
     side: str

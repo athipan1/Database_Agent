@@ -5,7 +5,7 @@ import psycopg2.extras
 import sqlite3
 import time
 from decimal import Decimal
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 
@@ -291,9 +291,10 @@ class TradingDB:
         finally:
             cursor.close()
 
-    def create_order(self, account_id: int, client_order_id: str, symbol: str, order_type: str, quantity: int, price: Decimal, correlation_id: str) -> Optional[int]:
+    def create_order(self, account_id: Union[int, str], client_order_id: str, symbol: str, order_type: str, quantity: int, price: Decimal, correlation_id: str) -> Optional[int]:
         cursor = self.get_cursor()
         try:
+            account_id = int(account_id)
             query = f"""
                 INSERT INTO orders (account_id, client_order_id, symbol, order_type, quantity, price, status, correlation_id)
                 VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, 'pending', {self.param_style})
@@ -318,9 +319,10 @@ class TradingDB:
         finally:
             cursor.close()
 
-    def execute_order(self, order_id: int) -> (str, Optional[str]):
+    def execute_order(self, order_id: Union[int, str]) -> (str, Optional[str]):
         cursor = self.get_cursor()
         try:
+            order_id = int(order_id)
             # For SQLite, FOR UPDATE is not supported, so we start a transaction
             # with an immediate lock to prevent concurrent writes.
             # For Postgres, the SELECT...FOR UPDATE will handle locking.
@@ -431,34 +433,38 @@ class TradingDB:
             VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style})
         """, (position['account_id'], order_id, position['symbol'], -sell_quantity, new_quantity, f"SELL {sell_quantity} {position['symbol']}"))
 
-    def get_account_balance(self, account_id: int) -> Optional[Decimal]:
+    def get_account_balance(self, account_id: Union[int, str]) -> Optional[Decimal]:
         cursor = self.get_cursor()
         try:
+            account_id = int(account_id)
             cursor.execute(f"SELECT cash_balance FROM accounts WHERE account_id = {self.param_style}", (account_id,))
             result = cursor.fetchone()
             return self._to_decimal(result['cash_balance']) if result else None
         finally:
             cursor.close()
 
-    def get_positions(self, account_id: int) -> List[Dict[str, Any]]:
+    def get_positions(self, account_id: Union[int, str]) -> List[Dict[str, Any]]:
         cursor = self.get_cursor()
         try:
+            account_id = int(account_id)
             cursor.execute(f"SELECT * FROM positions WHERE account_id = {self.param_style}", (account_id,))
             return [{k: self._to_decimal(v) if k == 'average_cost' else v for k, v in dict(row).items()} for row in cursor.fetchall()]
         finally:
             cursor.close()
 
-    def get_order_history(self, account_id: int) -> List[Dict[str, Any]]:
+    def get_order_history(self, account_id: Union[int, str]) -> List[Dict[str, Any]]:
         cursor = self.get_cursor()
         try:
+            account_id = int(account_id)
             cursor.execute(f"SELECT * FROM orders WHERE account_id = {self.param_style} ORDER BY timestamp DESC", (account_id,))
             return [{k: self._to_decimal(v) if k == 'price' else v for k, v in dict(row).items()} for row in cursor.fetchall()]
         finally:
             cursor.close()
 
-    def get_executions(self, account_id: int, limit: int = 50, offset: int = 0, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_executions(self, account_id: Union[int, str], limit: int = 50, offset: int = 0, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
         cursor = self.get_cursor()
         try:
+            account_id = int(account_id)
             query = "SELECT order_id, account_id, symbol, order_type, quantity, price, timestamp FROM orders WHERE account_id = ? AND status = 'executed'"
             params = [account_id]
 
