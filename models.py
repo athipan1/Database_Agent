@@ -10,20 +10,16 @@ class CustomBaseModel(BaseModel):
             datetime.datetime: lambda v: v.isoformat()
         }
 
-class ErrorDetail(BaseModel):
-    code: str
-    message: str
-    retryable: bool
-
 T = TypeVar("T")
 
-class StandardResponse(CustomBaseModel, Generic[T]):
+class StandardAgentResponse(CustomBaseModel, Generic[T]):
     status: Literal["success", "error"]
     agent_type: str = "database"
     version: str = "1.0"
-    timestamp: str
+    timestamp: datetime.datetime
     data: Optional[T] = None
     error: Optional[dict] = None
+    confidence_score: Optional[float] = None
 
 class AccountBalance(CustomBaseModel):
     cash_balance: Decimal
@@ -72,12 +68,12 @@ class ExecutionTrade(CustomBaseModel):
     quantity: int
     price: Decimal
     notional: Decimal
-    executed_at: str
+    executed_at: datetime.datetime
     source_agent: Optional[str] = None
 
 class Price(CustomBaseModel):
     symbol: str
-    timestamp: str
+    timestamp: datetime.datetime
     open: Decimal
     high: Decimal
     low: Decimal

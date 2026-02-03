@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Security, Request
 from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from starlette.responses import Response
 from typing import Optional, Any, TypeVar, Generic, List, Union
 from decimal import Decimal
@@ -19,7 +20,7 @@ from trading_db import TradingDB
 from alpaca_client import AlpacaClient
 from models import (
     AccountBalance, Position, Order, CreateOrderBody, CreateOrderResponse,
-    OrderExecutionResponse, ExecutionTrade, Price, StandardResponse, ErrorDetail
+    OrderExecutionResponse, ExecutionTrade, Price, StandardAgentResponse
 )
 
 # --- Context setup for Correlation ID ---
@@ -77,9 +78,10 @@ def wrap_response(data: Any = None, status: str = "success", error: Optional[dic
         "status": status,
         "agent_type": "database",
         "version": "1.0",
-        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "timestamp": datetime.now(timezone.utc),
         "data": data,
-        "error": error
+        "error": error,
+        "confidence_score": None
     }
 
 # API Key Security
@@ -173,14 +175,14 @@ async def shutdown_event():
 async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
-        content=wrap_response(
+        content=jsonable_encoder(wrap_response(
             status="error",
             error={
                 "code": str(exc.status_code),
                 "message": exc.detail,
                 "retryable": False
             }
-        )
+        ))
     )
 
 @app.exception_handler(Exception)
@@ -188,19 +190,19 @@ async def general_exception_handler(request: Request, exc: Exception):
     logging.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content=wrap_response(
+        content=jsonable_encoder(wrap_response(
             status="error",
             error={
                 "code": "INTERNAL_SERVER_ERROR",
                 "message": str(exc),
                 "retryable": False
             }
-        )
+        ))
     )
 
 # --- API Endpoints ---
 
-@app.get("/health", response_model=StandardResponse[dict])
+@app.get("/health", response_model=StandardAgentResponse[dict])
 async def health_check():
     """Simple health check endpoint."""
     logging.info("Health check endpoint was called.")
@@ -212,7 +214,7 @@ async def health_check():
     return wrap_response(data=health_data)
 
 
-@app.get("/accounts/{account_id}/balance", response_model=StandardResponse[AccountBalance])
+@app.get("/accounts/{account_id}/balance", response_model=StandardAgentResponse[AccountBalance])
 async def get_balance(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """Retriees the cash balance for a specific account."""
     logging.info(f"Request to get balance for account {account_id}.")
@@ -221,21 +223,21 @@ async def get_balance(account_id: Union[int, str], api_key: str = Depends(get_ap
         raise HTTPException(status_code=404, detail=f"Account {account_id} not found")
     return wrap_response(data=AccountBalance(cash_balance=balance))
 
-@app.get("/accounts/{account_id}/positions", response_model=StandardResponse[List[Position]])
+@app.get("/accounts/{account_id}/positions", response_model=StandardAgentResponse[List[Position]])
 async def get_positions_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """Retrieves all positions for a specific account."""
     logging.info(f"Request to get positions for account {account_id}.")
     positions = db.get_positions(account_id)
     return wrap_response(data=positions)
 
-@app.get("/accounts/{account_id}/orders", response_model=StandardResponse[List[Order]])
+@app.get("/accounts/{account_id}/orders", response_model=StandardAgentResponse[List[Order]])
 async def get_order_history_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """Retrieves the complete order history for a specific account."""
     logging.info(f"Request to get order history for account {account_id}.")
     orders = db.get_order_history(account_id)
     return wrap_response(data=orders)
 
-@app.post("/accounts/{account_id}/orders", response_model=StandardResponse[CreateOrderResponse], status_code=201)
+@app.post("/accounts/{account_id}/orders", response_model=StandardAgentResponse[CreateOrderResponse], status_code=201)
 async def create_new_order(account_id: Union[int, str], order_body: CreateOrderBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """
     Creates a new trade order with a 'pending' status.
@@ -266,7 +268,7 @@ async def create_new_order(account_id: Union[int, str], order_body: CreateOrderB
         client_order_id=client_order_id
     ))
 
-@app.post("/orders/{order_id}/execute", response_model=StandardResponse[OrderExecutionResponse])
+@app.post("/orders/{order_id}/execute", response_model=StandardAgentResponse[OrderExecutionResponse])
 async def execute_existing_order(order_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """
     Executes a pending order. This is the core transactional endpoint.
@@ -291,7 +293,7 @@ async def execute_existing_order(order_id: Union[int, str], api_key: str = Depen
         raise HTTPException(status_code=500, detail="An unexpected internal server error occurred.")
 
 
-@app.get("/accounts/{account_id}/trade_history", response_model=StandardResponse[List[ExecutionTrade]])
+@app.get("/accounts/{account_id}/trade_history", response_model=StandardAgentResponse[List[ExecutionTrade]])
 async def get_trade_history_for_account(
     account_id: Union[int, str],
     limit: int = 50,
@@ -306,7 +308,7 @@ async def get_trade_history_for_account(
     trades = db.get_executions(account_id, limit, offset, start_date, end_date)
     return wrap_response(data=trades)
 
-@app.get("/prices/{symbol}", response_model=StandardResponse[List[Price]])
+@app.get("/prices/{symbol}", response_model=StandardAgentResponse[List[Price]])
 async def get_price_history_for_symbol(
     symbol: str,
     timeframe: str = '1h',
