@@ -22,18 +22,23 @@ class StandardAgentResponse(CustomBaseModel, Generic[T]):
     confidence_score: Optional[float] = None
 
 class AccountBalance(CustomBaseModel):
+    account_id: Union[int, str]
     cash_balance: Decimal
 
 class Position(CustomBaseModel):
+    account_id: Union[int, str]
     symbol: str
     quantity: int
     average_cost: Decimal
 
 class Order(CustomBaseModel):
     order_id: Union[int, str]
+    trade_id: Optional[Union[int, str]] = None
+    account_id: Union[int, str]
     client_order_id: UUID
     symbol: str
-    order_type: Literal["BUY", "SELL"]
+    order_type: str
+    side: str
     quantity: int
     price: Optional[Decimal]
     status: Literal["pending", "executed", "cancelled", "failed"]
@@ -43,12 +48,14 @@ class Order(CustomBaseModel):
 class CreateOrderBody(CustomBaseModel):
     client_order_id: Optional[UUID] = Field(None, description="A unique client-generated ID for idempotency. If not provided, one will be generated.")
     symbol: str
-    order_type: Literal["BUY", "SELL"]
+    order_type: Optional[str] = Field(None, description="Deprecated: use 'side' instead. Accepted values: 'BUY', 'SELL'")
+    side: Optional[str] = Field(None, description="The side of the order. Accepted values: 'buy', 'sell'")
     quantity: int
     price: Decimal
 
 class CreateOrderResponse(CustomBaseModel):
     order_id: Union[int, str]
+    account_id: Union[int, str]
     status: str
     client_order_id: UUID
     reason: Optional[str] = None
@@ -56,6 +63,8 @@ class CreateOrderResponse(CustomBaseModel):
 
 class OrderExecutionResponse(CustomBaseModel):
     order_id: Union[int, str]
+    trade_id: Optional[Union[int, str]] = None
+    account_id: Union[int, str]
     status: Literal["executed", "failed"]
     reason: Optional[str] = None
 
