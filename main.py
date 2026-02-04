@@ -221,7 +221,7 @@ async def get_balance(account_id: Union[int, str], api_key: str = Depends(get_ap
     balance = db.get_account_balance(account_id)
     if balance is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id} not found")
-    return wrap_response(data=AccountBalance(cash_balance=balance))
+    return wrap_response(data=AccountBalance(account_id=account_id, cash_balance=balance))
 
 @app.get("/accounts/{account_id}/positions", response_model=StandardAgentResponse[List[Position]])
 async def get_positions_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
@@ -234,8 +234,13 @@ async def get_positions_for_account(account_id: Union[int, str], api_key: str = 
 async def get_order_history_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """Retrieves the complete order history for a specific account."""
     logging.info(f"Request to get order history for account {account_id}.")
-    orders = db.get_order_history(account_id)
-    return wrap_response(data=orders)
+    orders_data = db.get_order_history(account_id)
+    # Populate side and trade_id fields for consistency
+    for o in orders_data:
+        o['side'] = o.get('order_type', '').lower()
+        if o.get('status') == 'executed':
+            o['trade_id'] = o.get('order_id')
+    return wrap_response(data=orders_data)
 
 @app.post("/accounts/{account_id}/orders", response_model=StandardAgentResponse[CreateOrderResponse], status_code=201)
 async def create_new_order(account_id: Union[int, str], order_body: CreateOrderBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
@@ -247,6 +252,15 @@ async def create_new_order(account_id: Union[int, str], order_body: CreateOrderB
     """
     logging.info(f"Request to create new order for account {account_id}.")
 
+    # Resolve side from 'side' or 'order_type'
+    raw_side = order_body.side or order_body.order_type
+    if not raw_side:
+        raise HTTPException(status_code=422, detail="Either 'side' or 'order_type' must be provided.")
+
+    side = raw_side.upper()
+    if side not in ['BUY', 'SELL']:
+        raise HTTPException(status_code=422, detail=f"Invalid side/order_type: {raw_side}")
+
     # If client_order_id is not provided, generate one.
     client_order_id = order_body.client_order_id or uuid.uuid4()
 
@@ -254,7 +268,7 @@ async def create_new_order(account_id: Union[int, str], order_body: CreateOrderB
         account_id=account_id,
         client_order_id=str(client_order_id),
         symbol=order_body.symbol,
-        order_type=order_body.order_type,
+        order_type=side,
         quantity=order_body.quantity,
         price=order_body.price,
         correlation_id=correlation_id
@@ -264,6 +278,7 @@ async def create_new_order(account_id: Union[int, str], order_body: CreateOrderB
 
     return wrap_response(data=CreateOrderResponse(
         order_id=order_id,
+        account_id=account_id,
         status="pending",
         client_order_id=client_order_id
     ))
@@ -278,10 +293,12 @@ async def execute_existing_order(order_id: Union[int, str], api_key: str = Depen
     logging.info(f"Request to execute order {order_id}.")
     try:
         # The execute_order method is now fully atomic and returns the outcome.
-        status, reason = db.execute_order(order_id)
+        status, reason, account_id = db.execute_order(order_id)
 
         return wrap_response(data=OrderExecutionResponse(
             order_id=order_id,
+            trade_id=order_id if status == 'executed' else None,
+            account_id=account_id,
             status=status,
             reason=reason
         ))

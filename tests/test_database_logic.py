@@ -91,8 +91,9 @@ def test_successful_buy_order(db_session: TradingDB):
     assert order_id is not None
 
     # 2. Execute the order
-    status, reason = db_session.execute_order(order_id)
+    status, reason, aid = db_session.execute_order(order_id)
     assert status == 'executed'
+    assert aid == ACCOUNT_ID
     assert reason is None
 
     # 3. Verify the final state of the database
@@ -142,7 +143,7 @@ def test_insufficient_funds_buy_order(db_session: TradingDB):
     symbol, quantity, price = "AMZN", 1, Decimal("2000000.00") # Price exceeds initial balance
 
     order_id = db_session.create_order(ACCOUNT_ID, client_order_id, symbol, "BUY", quantity, price, "test-correlation-id")
-    status, reason = db_session.execute_order(order_id)
+    status, reason, aid = db_session.execute_order(order_id)
     assert status == 'failed'
     assert reason == 'insufficient_funds'
 

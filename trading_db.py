@@ -319,7 +319,7 @@ class TradingDB:
         finally:
             cursor.close()
 
-    def execute_order(self, order_id: Union[int, str]) -> (str, Optional[str]):
+    def execute_order(self, order_id: Union[int, str]) -> (str, Optional[str], Optional[int]):
         cursor = self.get_cursor()
         try:
             order_id = int(order_id)
@@ -336,8 +336,13 @@ class TradingDB:
             cursor.execute(f"SELECT * FROM orders WHERE order_id = {self.param_style} AND status = 'pending' {lock_clause}", (order_id,))
             order = cursor.fetchone()
             if not order:
+                # If order is not pending, it might already be executed/failed.
+                # Let's still try to get the account_id for the response if it exists.
+                cursor.execute(f"SELECT account_id FROM orders WHERE order_id = {self.param_style}", (order_id,))
+                row = cursor.fetchone()
+                aid = row['account_id'] if row else None
                 self.conn.rollback()
-                return 'failed', 'invalid_state'
+                return 'failed', 'invalid_state', aid
 
             account_id, symbol, order_type, quantity = order['account_id'], order['symbol'], order['order_type'], order['quantity']
             price = self._to_decimal(order['price'])
@@ -354,7 +359,7 @@ class TradingDB:
                 if cash_balance < total_cost:
                     self._update_order_status_in_txn(cursor, order_id, 'failed', "insufficient_funds")
                     self.conn.commit()
-                    return 'failed', 'insufficient_funds'
+                    return 'failed', 'insufficient_funds', account_id
 
                 new_balance = cash_balance - total_cost
                 self._update_balance_in_txn(cursor, account_id, new_balance, order_id, -total_cost, f"BUY {quantity} {symbol}")
@@ -367,7 +372,7 @@ class TradingDB:
                 if not position or position['quantity'] < quantity:
                     self._update_order_status_in_txn(cursor, order_id, 'failed', "insufficient_shares")
                     self.conn.commit()
-                    return 'failed', 'insufficient_shares'
+                    return 'failed', 'insufficient_shares', account_id
 
                 new_balance = cash_balance + total_cost
                 self._update_balance_in_txn(cursor, account_id, new_balance, order_id, total_cost, f"SELL {quantity} {symbol}")
@@ -375,7 +380,7 @@ class TradingDB:
                 self._update_order_status_in_txn(cursor, order_id, 'executed')
 
             self.conn.commit()
-            return 'executed', None
+            return 'executed', None, account_id
         except Exception as e:
             self.conn.rollback()
             logging.error(f"Failed to execute order {order_id}: {e}", exc_info=True)
