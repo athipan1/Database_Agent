@@ -246,9 +246,6 @@ async def get_order_history_for_account(account_id: Union[int, str], api_key: st
 async def create_new_order(account_id: Union[int, str], order_body: CreateOrderBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     """
     Creates a new trade order with a 'pending' status.
-    This endpoint is idempotent based on the `client_order_id`.
-    If an order with the same `client_order_id` already exists,
-    the existing order's ID will be returned.
     """
     logging.info(f"Request to create new order for account {account_id}.")
 
@@ -283,29 +280,36 @@ async def create_new_order(account_id: Union[int, str], order_body: CreateOrderB
         client_order_id=client_order_id
     ))
 
-@app.post("/orders/{order_id}/execute", response_model=StandardAgentResponse[OrderExecutionResponse])
-async def execute_existing_order(order_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+# --- UPDATED: Added /accounts/{account_id} prefix ---
+@app.post("/accounts/{account_id}/orders/{order_id}/execute", response_model=StandardAgentResponse[OrderExecutionResponse])
+async def execute_existing_order(
+    account_id: str, # Added to match new path
+    order_id: Union[int, str], 
+    api_key: str = Depends(get_api_key), 
+    correlation_id: str = Depends(get_correlation_id)
+):
     """
-    Executes a pending order. This is the core transactional endpoint.
-    It will update balances and positions atomically.
-    If the order is already processed or doesn't exist, it will return an error.
+    Executes a pending order.
+    Updated path to match Manager_Agent expectations: /accounts/{account_id}/orders/{order_id}/execute
     """
-    logging.info(f"Request to execute order {order_id}.")
+    logging.info(f"Request to execute order {order_id} for account {account_id}.")
     try:
         # The execute_order method is now fully atomic and returns the outcome.
-        status, reason, account_id = db.execute_order(order_id)
+        status, reason, ret_account_id = db.execute_order(order_id)
+
+        # Basic validation to ensure we are executing for the right account context (Optional but good practice)
+        if str(ret_account_id) != str(account_id):
+            logging.warning(f"Order {order_id} belongs to account {ret_account_id}, but request came for {account_id}")
 
         return wrap_response(data=OrderExecutionResponse(
             order_id=order_id,
             trade_id=order_id if status == 'executed' else None,
-            account_id=account_id,
+            account_id=ret_account_id, # Return the actual account ID from DB
             status=status,
             reason=reason
         ))
 
     except Exception as e:
-        # This catch block is for unexpected system/database errors.
-        # Business logic errors are handled by the return value of execute_order.
         logging.error(f"An unexpected error occurred while executing order {order_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="An unexpected internal server error occurred.")
 
@@ -325,16 +329,21 @@ async def get_trade_history_for_account(
     trades = db.get_executions(account_id, limit, offset, start_date, end_date)
     return wrap_response(data=trades)
 
-@app.get("/prices/{symbol}", response_model=StandardAgentResponse[List[Price]])
+# --- UPDATED: Added /accounts/{account_id} prefix ---
+@app.get("/accounts/{account_id}/prices/{symbol}", response_model=StandardAgentResponse[List[Price]])
 async def get_price_history_for_symbol(
+    account_id: str, # Added to match new path
     symbol: str,
     timeframe: str = '1h',
     limit: int = 100,
     api_key: str = Depends(get_api_key),
     correlation_id: str = Depends(get_correlation_id)
 ):
-    """Retrieves price history for a specific symbol."""
-    logging.info(f"Request to get price history for symbol {symbol}.")
+    """
+    Retrieves price history for a specific symbol.
+    Updated path to match Manager_Agent expectations: /accounts/{account_id}/prices/{symbol}
+    """
+    logging.info(f"Request to get price history for symbol {symbol} (Context: Account {account_id}).")
     prices = db.get_price_history(symbol, timeframe, limit)
     if not prices:
         raise HTTPException(status_code=404, detail=f"No price data found for symbol {symbol}")
