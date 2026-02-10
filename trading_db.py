@@ -165,6 +165,31 @@ class TradingDB:
             return None
         return Decimal(str(value))
 
+    def _add_column_if_not_exists(self, cursor, table, column, definition):
+        """Adds a column to a table if it doesn't exist."""
+        if self.db_type == 'sqlite':
+            try:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                logging.info(f"Added column {column} to table {table} (SQLite).")
+            except sqlite3.OperationalError:
+                # Column likely already exists
+                pass
+        else:
+            # PostgreSQL uses a DO block to safely add a column
+            query = f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='{table}' AND column_name='{column}'
+                    ) THEN
+                        ALTER TABLE {table} ADD COLUMN {column} {definition};
+                    END IF;
+                END $$;
+            """
+            cursor.execute(query)
+            logging.info(f"Ensured column {column} exists in table {table} (Postgres).")
+
     def setup_database(self):
         cursor = self.get_cursor()
         # Define types compatible with both DBs
@@ -182,7 +207,7 @@ class TradingDB:
                             CREATE TYPE order_type_enum AS ENUM ('BUY', 'SELL');
                         END IF;
                         IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'order_status_enum') THEN
-                            CREATE TYPE order_status_enum AS ENUM ('pending', 'executed', 'cancelled', 'failed');
+                            CREATE TYPE order_status_enum AS ENUM ('pending', 'executed', 'cancelled', 'failed', 'placed', 'partially_filled');
                         END IF;
                     END
                     $$;
@@ -205,26 +230,43 @@ class TradingDB:
                     UNIQUE (account_id, symbol)
                 );
             """)
-            order_type_pg = 'order_type_enum' if self.db_type == 'postgres' else 'TEXT'
-            order_status_pg = 'order_status_enum' if self.db_type == 'postgres' else 'TEXT'
-            order_type_check = "CHECK(order_type IN ('BUY', 'SELL'))" if self.db_type == 'sqlite' else ''
-            order_status_check = "CHECK(status IN ('pending', 'executed', 'cancelled', 'failed'))" if self.db_type == 'sqlite' else ''
 
+            # Using TEXT for status/type to be more flexible during migration
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS orders (
                     order_id {pk_type},
-                    client_order_id {uuid_type} NOT NULL UNIQUE,
+                    trade_id TEXT NOT NULL UNIQUE,
                     account_id INTEGER NOT NULL REFERENCES accounts(account_id),
                     symbol TEXT NOT NULL,
-                    order_type {order_type_pg} NOT NULL {order_type_check},
+                    side TEXT NOT NULL,
+                    order_type TEXT NOT NULL,
                     quantity BIGINT NOT NULL,
                     price {numeric_type},
-                    status {order_status_pg} NOT NULL {order_status_check},
-                    failure_reason TEXT,
+                    time_in_force TEXT DEFAULT 'GTC',
+                    status TEXT NOT NULL,
+                    broker_order_id TEXT,
+                    reason TEXT,
+                    executed_quantity BIGINT DEFAULT 0,
+                    avg_execution_price {numeric_type},
+                    executed_at {timestamp_type},
                     correlation_id TEXT,
-                    timestamp {timestamp_type} DEFAULT CURRENT_TIMESTAMP
+                    timestamp {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
+                    -- Backward compatibility
+                    client_order_id {uuid_type} UNIQUE,
+                    failure_reason TEXT
                 );
             """)
+
+            # Ensure new columns exist for existing databases
+            self._add_column_if_not_exists(cursor, "orders", "trade_id", "TEXT")
+            self._add_column_if_not_exists(cursor, "orders", "side", "TEXT")
+            self._add_column_if_not_exists(cursor, "orders", "time_in_force", "TEXT DEFAULT 'GTC'")
+            self._add_column_if_not_exists(cursor, "orders", "broker_order_id", "TEXT")
+            self._add_column_if_not_exists(cursor, "orders", "reason", "TEXT")
+            self._add_column_if_not_exists(cursor, "orders", "executed_quantity", "BIGINT DEFAULT 0")
+            self._add_column_if_not_exists(cursor, "orders", "avg_execution_price", numeric_type)
+            self._add_column_if_not_exists(cursor, "orders", "executed_at", timestamp_type)
+
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS ledger (
                     entry_id {pk_type},
@@ -291,26 +333,26 @@ class TradingDB:
         finally:
             cursor.close()
 
-    def create_order(self, account_id: Union[int, str], client_order_id: str, symbol: str, order_type: str, quantity: int, price: Decimal, correlation_id: str) -> Optional[int]:
+    def create_order(self, account_id: Union[int, str], trade_id: str, symbol: str, side: str, order_type: str = 'market', quantity: int = 0, price: Optional[Decimal] = None, time_in_force: str = 'GTC', correlation_id: str = '') -> Optional[int]:
         cursor = self.get_cursor()
         try:
             account_id = int(account_id)
             query = f"""
-                INSERT INTO orders (account_id, client_order_id, symbol, order_type, quantity, price, status, correlation_id)
-                VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, 'pending', {self.param_style})
+                INSERT INTO orders (account_id, trade_id, symbol, side, order_type, quantity, price, time_in_force, status, correlation_id, client_order_id)
+                VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, 'pending', {self.param_style}, {self.param_style})
             """
-            params = (account_id, client_order_id, symbol.upper(), order_type.upper(), quantity, str(price), correlation_id)
+            params = (account_id, trade_id, symbol.upper(), side.lower(), order_type.lower(), quantity, str(price) if price is not None else None, time_in_force, correlation_id, trade_id)
             cursor.execute(query, params)
 
             # Fetch last inserted ID
-            cursor.execute(f"SELECT order_id FROM orders WHERE client_order_id = {self.param_style}", (client_order_id,))
+            cursor.execute(f"SELECT order_id FROM orders WHERE trade_id = {self.param_style}", (trade_id,))
             order_id = cursor.fetchone()['order_id']
 
             self.conn.commit()
             return order_id
         except (psycopg2.errors.UniqueViolation, sqlite3.IntegrityError):
             self.conn.rollback()
-            cursor.execute(f"SELECT order_id FROM orders WHERE client_order_id = {self.param_style}", (client_order_id,))
+            cursor.execute(f"SELECT order_id FROM orders WHERE trade_id = {self.param_style}", (trade_id,))
             existing = cursor.fetchone()
             return existing['order_id'] if existing else None
         except Exception:
@@ -319,33 +361,97 @@ class TradingDB:
         finally:
             cursor.close()
 
+    def get_order_by_id(self, order_id: int) -> Optional[Dict[str, Any]]:
+        cursor = self.get_cursor()
+        try:
+            cursor.execute(f"SELECT * FROM orders WHERE order_id = {self.param_style}", (order_id,))
+            row = cursor.fetchone()
+            return self._format_order_row(row) if row else None
+        finally:
+            cursor.close()
+
+    def get_order_by_trade_id(self, trade_id: Union[int, str]) -> Optional[Dict[str, Any]]:
+        cursor = self.get_cursor()
+        try:
+            cursor.execute(f"SELECT * FROM orders WHERE trade_id = {self.param_style}", (str(trade_id),))
+            row = cursor.fetchone()
+            return self._format_order_row(row) if row else None
+        finally:
+            cursor.close()
+
+    def update_order(self, order_id: int, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        cursor = self.get_cursor()
+        try:
+            if not updates:
+                return self.get_order_by_id(order_id)
+
+            # Security: Whitelist allowed columns to prevent SQL injection or arbitrary updates
+            ALLOWED_COLUMNS = {
+                'status', 'broker_order_id', 'reason', 'executed_quantity',
+                'avg_execution_price', 'executed_at', 'failure_reason', 'correlation_id'
+            }
+
+            set_clauses = []
+            params = []
+            for key, value in updates.items():
+                if key not in ALLOWED_COLUMNS:
+                    logging.warning(f"Ignored disallowed update key: {key}")
+                    continue
+
+                set_clauses.append(f"{key} = {self.param_style}")
+                if isinstance(value, Decimal):
+                    params.append(str(value))
+                else:
+                    params.append(value)
+
+            if not set_clauses:
+                return self.get_order_by_id(order_id)
+
+            params.append(order_id)
+            query = f"UPDATE orders SET {', '.join(set_clauses)} WHERE order_id = {self.param_style}"
+            cursor.execute(query, tuple(params))
+            self.conn.commit()
+            return self.get_order_by_id(order_id)
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def _format_order_row(self, row) -> Dict[str, Any]:
+        d = dict(row)
+        # Decimal fields
+        for field in ['price', 'avg_execution_price']:
+            if field in d:
+                d[field] = self._to_decimal(d[field])
+        return d
+
     def execute_order(self, order_id: Union[int, str]) -> (str, Optional[str], Optional[int]):
         cursor = self.get_cursor()
         try:
             order_id = int(order_id)
-            # For SQLite, FOR UPDATE is not supported, so we start a transaction
-            # with an immediate lock to prevent concurrent writes.
-            # For Postgres, the SELECT...FOR UPDATE will handle locking.
             if self.db_type == 'sqlite':
                 cursor.execute("BEGIN IMMEDIATE;")
             else:
                 cursor.execute("BEGIN;")
 
-
             lock_clause = "FOR UPDATE" if self.db_type == 'postgres' else ""
             cursor.execute(f"SELECT * FROM orders WHERE order_id = {self.param_style} AND status = 'pending' {lock_clause}", (order_id,))
             order = cursor.fetchone()
             if not order:
-                # If order is not pending, it might already be executed/failed.
-                # Let's still try to get the account_id for the response if it exists.
                 cursor.execute(f"SELECT account_id FROM orders WHERE order_id = {self.param_style}", (order_id,))
                 row = cursor.fetchone()
                 aid = row['account_id'] if row else None
                 self.conn.rollback()
                 return 'failed', 'invalid_state', aid
 
-            account_id, symbol, order_type, quantity = order['account_id'], order['symbol'], order['order_type'], order['quantity']
+            account_id, symbol, side, quantity = order['account_id'], order['symbol'], order['side'].upper(), order['quantity']
             price = self._to_decimal(order['price'])
+            if price is None:
+                cursor.execute(f"SELECT close FROM prices WHERE symbol = {self.param_style} ORDER BY timestamp DESC LIMIT 1", (symbol,))
+                price_row = cursor.fetchone()
+                price = self._to_decimal(price_row['close']) if price_row else Decimal('100.00')
+
             total_cost = quantity * price
 
             cursor.execute(f"SELECT * FROM accounts WHERE account_id = {self.param_style} {lock_clause}", (account_id,))
@@ -355,7 +461,7 @@ class TradingDB:
 
             cash_balance = self._to_decimal(account['cash_balance'])
 
-            if order_type == 'BUY':
+            if side == 'BUY':
                 if cash_balance < total_cost:
                     self._update_order_status_in_txn(cursor, order_id, 'failed', "insufficient_funds")
                     self.conn.commit()
@@ -364,9 +470,9 @@ class TradingDB:
                 new_balance = cash_balance - total_cost
                 self._update_balance_in_txn(cursor, account_id, new_balance, order_id, -total_cost, f"BUY {quantity} {symbol}")
                 self._update_position_and_ledger_on_buy_in_txn(cursor, account_id, symbol, quantity, price, order_id)
-                self._update_order_status_in_txn(cursor, order_id, 'executed')
+                self._update_order_execution_in_txn(cursor, order_id, 'executed', quantity, price)
 
-            elif order_type == 'SELL':
+            elif side == 'SELL':
                 cursor.execute(f"SELECT * FROM positions WHERE account_id = {self.param_style} AND symbol = {self.param_style} {lock_clause}", (account_id, symbol))
                 position = cursor.fetchone()
                 if not position or position['quantity'] < quantity:
@@ -377,7 +483,7 @@ class TradingDB:
                 new_balance = cash_balance + total_cost
                 self._update_balance_in_txn(cursor, account_id, new_balance, order_id, total_cost, f"SELL {quantity} {symbol}")
                 self._update_position_and_ledger_on_sell_in_txn(cursor, dict(position), quantity, order_id)
-                self._update_order_status_in_txn(cursor, order_id, 'executed')
+                self._update_order_execution_in_txn(cursor, order_id, 'executed', quantity, price)
 
             self.conn.commit()
             return 'executed', None, account_id
@@ -390,8 +496,15 @@ class TradingDB:
 
     def _update_order_status_in_txn(self, cursor, order_id, status, reason=None):
         cursor.execute(
-            f"UPDATE orders SET status = {self.param_style}, failure_reason = {self.param_style} WHERE order_id = {self.param_style}",
-            (status, reason, order_id)
+            f"UPDATE orders SET status = {self.param_style}, reason = {self.param_style}, failure_reason = {self.param_style} WHERE order_id = {self.param_style}",
+            (status, reason, reason, order_id)
+        )
+
+    def _update_order_execution_in_txn(self, cursor, order_id, status, executed_qty, avg_price):
+        now = datetime.now(timezone.utc).isoformat() if self.db_type == 'sqlite' else datetime.now(timezone.utc)
+        cursor.execute(
+            f"UPDATE orders SET status = {self.param_style}, executed_quantity = {self.param_style}, avg_execution_price = {self.param_style}, executed_at = {self.param_style} WHERE order_id = {self.param_style}",
+            (status, executed_qty, str(avg_price), now, order_id)
         )
 
     def _update_balance_in_txn(self, cursor, account_id, new_balance, order_id, change, description):
@@ -462,7 +575,7 @@ class TradingDB:
         try:
             account_id = int(account_id)
             cursor.execute(f"SELECT * FROM orders WHERE account_id = {self.param_style} ORDER BY timestamp DESC", (account_id,))
-            return [{k: self._to_decimal(v) if k == 'price' else v for k, v in dict(row).items()} for row in cursor.fetchall()]
+            return [self._format_order_row(row) for row in cursor.fetchall()]
         finally:
             cursor.close()
 
@@ -470,7 +583,7 @@ class TradingDB:
         cursor = self.get_cursor()
         try:
             account_id = int(account_id)
-            query = "SELECT order_id, account_id, symbol, order_type, quantity, price, timestamp FROM orders WHERE account_id = ? AND status = 'executed'"
+            query = f"SELECT * FROM orders WHERE account_id = {self.param_style} AND status = 'executed'"
             params = [account_id]
 
             if start_date:
@@ -480,7 +593,7 @@ class TradingDB:
                 query += " AND timestamp <= ?"
                 params.append(end_date)
 
-            query += " ORDER BY timestamp DESC, order_id DESC LIMIT ? OFFSET ?"
+            query += f" ORDER BY timestamp DESC, order_id DESC LIMIT {self.param_style} OFFSET {self.param_style}"
             params.extend([limit, offset])
 
             # Adjust param style for PostgreSQL
@@ -490,21 +603,20 @@ class TradingDB:
             cursor.execute(query, tuple(params))
             trades = []
             for row in cursor.fetchall():
-                row_dict = dict(row)
-                price = self._to_decimal(row_dict.get('price'))
-                quantity = row_dict.get('quantity')
+                row_dict = self._format_order_row(row)
+                price = row_dict.get('avg_execution_price') or row_dict.get('price')
+                quantity = row_dict.get('executed_quantity') or row_dict.get('quantity')
                 notional = price * quantity if price and quantity else Decimal('0')
 
                 trades.append({
-                    "trade_id": row_dict.get('order_id'),
+                    "trade_id": row_dict.get('trade_id') or row_dict.get('order_id'),
                     "account_id": row_dict.get('account_id'),
                     "symbol": row_dict.get('symbol'),
-                    "side": row_dict.get('order_type').lower(),
+                    "side": row_dict.get('side') or 'buy',
                     "quantity": quantity,
                     "price": price,
                     "notional": notional,
-                    "executed_at": row_dict.get('timestamp'),
-                    # NOTE: asset_id and source_agent are not in the current schema
+                    "executed_at": row_dict.get('executed_at') or row_dict.get('timestamp'),
                     "asset_id": None,
                     "source_agent": None
                 })
@@ -535,18 +647,11 @@ class TradingDB:
             cursor.close()
 
     def ingest_historical_prices(self, price_data: List[Dict[str, Any]]):
-        """
-        Ingests a list of historical price data points into the database.
-        It uses an 'ON CONFLICT DO NOTHING' clause to prevent duplicates
-        based on the (symbol, timeframe, timestamp) unique constraint.
-        This is a highly efficient bulk operation.
-        """
         if not price_data:
             logging.info("No price data provided to ingest.")
             return
 
         if self.db_type == 'sqlite':
-            # SQLite uses a different syntax for ON CONFLICT
             query = """
                 INSERT INTO prices (symbol, timeframe, timestamp, open, high, low, close, volume)
                 VALUES (:symbol, :timeframe, :timestamp, :open, :high, :low, :close, :volume)
@@ -561,10 +666,9 @@ class TradingDB:
 
         cursor = self.get_cursor()
         try:
-            # For SQLite, execute many with a list of dicts
             if self.db_type == 'sqlite':
                  cursor.executemany(query, price_data)
-            else: # For psycopg2, execute_batch is highly efficient
+            else:
                 psycopg2.extras.execute_batch(cursor, query, price_data)
 
             self.conn.commit()
@@ -575,4 +679,3 @@ class TradingDB:
             raise
         finally:
             cursor.close()
-

@@ -1,14 +1,40 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Literal, Optional, Any, TypeVar, Generic, List, Union
 from decimal import Decimal
 from uuid import UUID
+from enum import Enum
 import datetime
 
+class OrderSide(str, Enum):
+    BUY = "buy"
+    SELL = "sell"
+
+class OrderType(str, Enum):
+    MARKET = "market"
+    LIMIT = "limit"
+
+class TimeInForce(str, Enum):
+    GTC = "GTC"  # Good 'til Canceled
+    IOC = "IOC"  # Immediate or Cancel
+    FOK = "FOK"  # Fill or Kill
+
+class OrderStatus(str, Enum):
+    PENDING = "pending"
+    PLACED = "placed"
+    PARTIALLY_FILLED = "partially_filled"
+    EXECUTED = "executed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
 class CustomBaseModel(BaseModel):
-    class Config:
+    model_config = ConfigDict(
         json_encoders = {
-            datetime.datetime: lambda v: v.isoformat()
-        }
+            datetime.datetime: lambda v: v.isoformat(),
+            Decimal: lambda v: float(v) if v is not None else None
+        },
+        from_attributes=True,
+        populate_by_name=True
+    )
 
 T = TypeVar("T")
 
@@ -32,40 +58,55 @@ class Position(CustomBaseModel):
     average_cost: Decimal
 
 class Order(CustomBaseModel):
-    order_id: Union[int, str]
-    trade_id: Optional[Union[int, str]] = None
+    order_id: int
+    trade_id: Union[int, str]
     account_id: Union[int, str]
-    client_order_id: UUID
     symbol: str
-    order_type: str
-    side: str
+    side: OrderSide
+    order_type: OrderType
+    price: Optional[Decimal] = None
     quantity: int
-    price: Optional[Decimal]
-    status: Literal["pending", "executed", "cancelled", "failed"]
+    time_in_force: TimeInForce = TimeInForce.GTC
+
+    # --- State Fields ---
+    status: OrderStatus = OrderStatus.PENDING
+    broker_order_id: Optional[str] = None
+    reason: Optional[str] = None
+    executed_quantity: int = 0
+    avg_execution_price: Optional[Decimal] = None
+    executed_at: Optional[datetime.datetime] = None
+
+    # Backward compatibility
+    client_order_id: Optional[Union[UUID, str]] = None
     failure_reason: Optional[str] = None
-    timestamp: datetime.datetime
+    timestamp: Optional[datetime.datetime] = None
 
 class CreateOrderBody(CustomBaseModel):
-    client_order_id: Optional[UUID] = Field(None, description="A unique client-generated ID for idempotency. If not provided, one will be generated.")
+    trade_id: Union[int, str] = Field(..., description="Globally unique trade ID")
+    account_id: Union[int, str]
     symbol: str
-    order_type: Optional[str] = Field(None, description="Deprecated: use 'side' instead. Accepted values: 'BUY', 'SELL'")
-    side: Optional[str] = Field(None, description="The side of the order. Accepted values: 'buy', 'sell'")
+    side: OrderSide
+    order_type: OrderType
+    price: Optional[Decimal] = None
     quantity: int
-    price: Decimal
+    time_in_force: TimeInForce = TimeInForce.GTC
+
+    # Backward compatibility
+    client_order_id: Optional[Union[UUID, str]] = None
 
 class CreateOrderResponse(CustomBaseModel):
-    order_id: Union[int, str]
+    order_id: int
+    trade_id: Union[int, str]
     account_id: Union[int, str]
-    status: str
-    client_order_id: UUID
+    status: OrderStatus
+    client_order_id: Optional[Union[UUID, str]] = None
     reason: Optional[str] = None
 
-
 class OrderExecutionResponse(CustomBaseModel):
-    order_id: Union[int, str]
+    order_id: int
     trade_id: Optional[Union[int, str]] = None
     account_id: Union[int, str]
-    status: Literal["executed", "failed"]
+    status: OrderStatus
     reason: Optional[str] = None
 
 class ExecutionTrade(CustomBaseModel):
