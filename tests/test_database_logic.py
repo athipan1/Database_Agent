@@ -87,7 +87,16 @@ def test_successful_buy_order(db_session: TradingDB):
     total_cost = quantity * price
 
     # 1. Create a pending order
-    order_id = db_session.create_order(ACCOUNT_ID, client_order_id, symbol, "BUY", quantity, price, "test-correlation-id")
+    order_id = db_session.create_order(
+        account_id=ACCOUNT_ID,
+        trade_id=client_order_id,
+        symbol=symbol,
+        side="BUY",
+        order_type="market",
+        quantity=quantity,
+        price=price,
+        correlation_id="test-correlation-id"
+    )
     assert order_id is not None
 
     # 2. Execute the order
@@ -112,9 +121,9 @@ def test_successful_buy_order(db_session: TradingDB):
     # Order status check
     order = db_session.get_order_history(ACCOUNT_ID)[0]
     assert order['order_id'] == order_id
-    assert str(order['client_order_id']) == client_order_id
+    assert str(order['trade_id']) == client_order_id
     assert order['status'] == 'executed'
-    assert order['failure_reason'] is None
+    assert order['reason'] is None
 
     # Ledger entries check for full auditability
     cursor = db_session.get_cursor()
@@ -142,7 +151,16 @@ def test_insufficient_funds_buy_order(db_session: TradingDB):
     client_order_id = str(uuid4())
     symbol, quantity, price = "AMZN", 1, Decimal("2000000.00") # Price exceeds initial balance
 
-    order_id = db_session.create_order(ACCOUNT_ID, client_order_id, symbol, "BUY", quantity, price, "test-correlation-id")
+    order_id = db_session.create_order(
+        account_id=ACCOUNT_ID,
+        trade_id=client_order_id,
+        symbol=symbol,
+        side="BUY",
+        order_type="market",
+        quantity=quantity,
+        price=price,
+        correlation_id="test-correlation-id"
+    )
     status, reason, aid = db_session.execute_order(order_id)
     assert status == 'failed'
     assert reason == 'insufficient_funds'
@@ -156,7 +174,7 @@ def test_insufficient_funds_buy_order(db_session: TradingDB):
 
     order = db_session.get_order_history(ACCOUNT_ID)[0]
     assert order['status'] == 'failed'
-    assert order['failure_reason'] == 'insufficient_funds'
+    assert order['reason'] == 'insufficient_funds'
 
     # Verify no ledger entries were created for this failed order
     cursor = db_session.get_cursor()
@@ -172,11 +190,29 @@ def test_idempotency_of_order_creation(db_session: TradingDB):
     client_order_id = str(uuid4())
 
     # First creation attempt
-    order_id_1 = db_session.create_order(ACCOUNT_ID, client_order_id, "TSLA", "BUY", 5, Decimal("250.00"), "test-correlation-id-1")
+    order_id_1 = db_session.create_order(
+        account_id=ACCOUNT_ID,
+        trade_id=client_order_id,
+        symbol="TSLA",
+        side="BUY",
+        order_type="market",
+        quantity=5,
+        price=Decimal("250.00"),
+        correlation_id="test-correlation-id-1"
+    )
     assert order_id_1 is not None
 
     # Second creation attempt with the same client_order_id
-    order_id_2 = db_session.create_order(ACCOUNT_ID, client_order_id, "TSLA", "BUY", 5, Decimal("250.00"), "test-correlation-id-2")
+    order_id_2 = db_session.create_order(
+        account_id=ACCOUNT_ID,
+        trade_id=client_order_id,
+        symbol="TSLA",
+        side="BUY",
+        order_type="market",
+        quantity=5,
+        price=Decimal("250.00"),
+        correlation_id="test-correlation-id-2"
+    )
     assert order_id_2 == order_id_1
 
     # Verify that only one order was actually created in the database
@@ -189,14 +225,41 @@ def test_get_executions(db_session: TradingDB):
     ACCOUNT_ID = 1
 
     # Create and execute a buy order
-    buy_order_id = db_session.create_order(ACCOUNT_ID, str(uuid4()), "AAPL", "BUY", 10, Decimal("150.00"), "corr-1")
+    buy_order_id = db_session.create_order(
+        account_id=ACCOUNT_ID,
+        trade_id=str(uuid4()),
+        symbol="AAPL",
+        side="BUY",
+        order_type="market",
+        quantity=10,
+        price=Decimal("150.00"),
+        correlation_id="corr-1"
+    )
     db_session.execute_order(buy_order_id)
 
     # Create a pending order (should not appear in trade history)
-    db_session.create_order(ACCOUNT_ID, str(uuid4()), "GOOG", "BUY", 5, Decimal("2800.00"), "corr-2")
+    db_session.create_order(
+        account_id=ACCOUNT_ID,
+        trade_id=str(uuid4()),
+        symbol="GOOG",
+        side="BUY",
+        order_type="market",
+        quantity=5,
+        price=Decimal("2800.00"),
+        correlation_id="corr-2"
+    )
 
     # Create and execute a sell order
-    sell_order_id = db_session.create_order(ACCOUNT_ID, str(uuid4()), "TSLA", "SELL", 2, Decimal("700.00"), "corr-3")
+    sell_order_id = db_session.create_order(
+        account_id=ACCOUNT_ID,
+        trade_id=str(uuid4()),
+        symbol="TSLA",
+        side="SELL",
+        order_type="market",
+        quantity=2,
+        price=Decimal("700.00"),
+        correlation_id="corr-3"
+    )
     # To execute a sell, we first need a position. Let's create one directly for simplicity.
     cursor = db_session.get_cursor()
     try:
