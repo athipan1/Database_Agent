@@ -2,15 +2,19 @@ import os
 import logging
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 import sqlite3
 import time
+import json
+import redis
 from decimal import Decimal
 from typing import Optional, Dict, Any, List, Union
 from urllib.parse import urlparse
 from datetime import datetime, timezone
+from contextlib import contextmanager
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging (handlers are added in main.py)
+logger = logging.getLogger(__name__)
 
 class TradingDB:
     """
@@ -23,7 +27,9 @@ class TradingDB:
         """
         Initializes the TradingDB and connects to the database with retry logic.
         """
-        self.conn = None
+        self.conn = None # Used for SQLite or initial setup
+        self.pool = None # Used for PostgreSQL multi-threading
+        self.redis_client = None
         self.db_type = 'sqlite' if os.environ.get('USE_SQLITE') else 'postgres'
         self.param_style = '?' if self.db_type == 'sqlite' else '%s'
         self.max_retries = max_retries
@@ -31,9 +37,22 @@ class TradingDB:
 
         try:
             self._connect_with_retry()
+            self._init_redis()
         except Exception as e:
             logging.critical(f"FATAL: Could not connect to the database after {self.max_retries} retries. Application will exit.")
             raise e
+
+    def _init_redis(self):
+        """Initializes the Redis client."""
+        redis_host = os.environ.get("REDIS_HOST", "redis")
+        redis_port = int(os.environ.get("REDIS_PORT", 6379))
+        try:
+            self.redis_client = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+            self.redis_client.ping()
+            logging.info(f"Successfully connected to Redis at {redis_host}:{redis_port}")
+        except Exception as e:
+            logging.warning(f"Failed to connect to Redis: {e}. Caching will be disabled.")
+            self.redis_client = None
 
     def _connect_with_retry(self):
         """
@@ -93,10 +112,17 @@ class TradingDB:
         delay = self.initial_delay
         while retries < self.max_retries:
             try:
-                # Set a short timeout to allow the retry logic to work quickly
-                self.conn = psycopg2.connect(**conn_params)
-                logging.info(f"Successfully connected to PostgreSQL database.")
-                return # Exit the loop on successful connection
+                # Initialize connection pool for PostgreSQL
+                self.pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=1,
+                    maxconn=20,
+                    **conn_params
+                )
+                # Test the pool by getting a connection
+                conn = self.pool.getconn()
+                self.pool.putconn(conn)
+                logging.info(f"Successfully initialized PostgreSQL connection pool.")
+                return
             except psycopg2.OperationalError as e:
                 logging.warning(f"Database connection attempt {retries + 1}/{self.max_retries} failed: {e}")
                 retries += 1
@@ -137,33 +163,143 @@ class TradingDB:
     def __del__(self):
         if self.conn:
             self.conn.close()
-            logging.info("Database connection closed.")
+        if self.pool:
+            self.pool.closeall()
+        logging.info("Database connection/pool closed.")
 
-    def get_cursor(self):
+    def get_connection(self):
+        """Returns a connection from the pool (Postgres) or the single connection (SQLite)."""
         if self.db_type == 'postgres':
-            # Returns rows that behave like dictionaries
-            return self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            return self.pool.getconn()
         else:
-            # sqlite3.Row objects are similar enough to DictCursor for this project
-            return self.conn.cursor()
+            return self.conn
+
+    def release_connection(self, conn):
+        """Releases a connection back to the pool (Postgres) or does nothing (SQLite)."""
+        if self.db_type == 'postgres':
+            self.pool.putconn(conn)
+
+    @contextmanager
+    def connection_scope(self):
+        """Context manager to handle connection lifecycle."""
+        conn = self.get_connection()
+        try:
+            yield conn
+        finally:
+            self.release_connection(conn)
+
+    def get_cursor(self, conn=None):
+        """Gets a cursor for the given connection. Defaults to self.conn for SQLite compatibility."""
+        if conn is None:
+            conn = self.conn
+
+        if conn is None:
+            raise ValueError("Connection must be provided when using a connection pool (Postgres).")
+
+        if self.db_type == 'postgres':
+            return conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        else:
+            return conn.cursor()
 
     def check_connection(self) -> bool:
         """Checks if the database connection is alive."""
         try:
-            cursor = self.get_cursor()
-            cursor.execute("SELECT 1")
-            cursor.fetchone()
-            cursor.close()
-            return True
+            with self.connection_scope() as conn:
+                cursor = self.get_cursor(conn)
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+                cursor.close()
+                return True
         except Exception as e:
             logging.error(f"Database connection check failed: {e}")
             return False
+
+    def get_database_stats(self) -> Dict[str, Any]:
+        """Collects database statistics like table sizes and row counts."""
+        stats = {"tables": {}}
+        try:
+            with self.connection_scope() as conn:
+                cursor = self.get_cursor(conn)
+                tables = ['accounts', 'positions', 'orders', 'ledger', 'prices']
+                for table in tables:
+                    # Row count
+                    cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                    row_count = cursor.fetchone()[0]
+
+                    table_stats = {"row_count": row_count}
+
+                    if self.db_type == 'postgres':
+                        # Table size in bytes
+                        cursor.execute(f"SELECT pg_total_relation_size(%s)", (table,))
+                        size = cursor.fetchone()[0]
+                        table_stats["size_bytes"] = size
+
+                    stats["tables"][table] = table_stats
+
+                if self.db_type == 'postgres':
+                    cursor.execute("SELECT pg_database_size(current_database())")
+                    stats["total_db_size_bytes"] = cursor.fetchone()[0]
+
+                cursor.close()
+            return stats
+        except Exception as e:
+            logging.error(f"Error collecting database stats: {e}")
+            return {}
 
     def _to_decimal(self, value: Any) -> Optional[Decimal]:
         """Converts a database value (potentially string from SQLite) to Decimal."""
         if value is None:
             return None
         return Decimal(str(value))
+
+    def ensure_price_partitions(self):
+        """Public method to ensure price partitions exist."""
+        with self.connection_scope() as conn:
+            cursor = self.get_cursor(conn)
+            try:
+                self._ensure_price_partitions(cursor)
+                conn.commit()
+            finally:
+                cursor.close()
+
+    def _ensure_price_partitions(self, cursor):
+        """Creates monthly partitions for the prices table (PostgreSQL)."""
+        if self.db_type != 'postgres':
+            return
+
+        now = datetime.now(timezone.utc)
+        # Create partitions for the last 25 months and next 12 months
+        # to support 2-year historical data ingestion and future-proofing.
+        for i in range(-25, 13):
+            year = now.year
+            month = now.month + i
+            while month > 12:
+                year += 1
+                month -= 12
+            while month < 1:
+                year -= 1
+                month += 12
+
+            start_date = f"{year}-{month:02d}-01"
+
+            # Calculate next month
+            next_month = month + 1
+            next_year = year
+            if next_month > 12:
+                next_month = 1
+                next_year += 1
+            end_date = f"{next_year}-{next_month:02d}-01"
+
+            partition_name = f"prices_y{year}m{month:02d}"
+
+            # Use safe identifier for partition name
+            from psycopg2 import sql
+            query = sql.SQL("CREATE TABLE IF NOT EXISTS {} PARTITION OF prices FOR VALUES FROM ({}) TO ({})").format(
+                sql.Identifier(partition_name),
+                sql.Literal(start_date),
+                sql.Literal(end_date)
+            )
+            cursor.execute(query)
 
     def _add_column_if_not_exists(self, cursor, table, column, definition):
         """Adds a column to a table if it doesn't exist."""
@@ -191,7 +327,11 @@ class TradingDB:
             logging.info(f"Ensured column {column} exists in table {table} (Postgres).")
 
     def setup_database(self):
-        cursor = self.get_cursor()
+        with self.connection_scope() as conn:
+            cursor = self.get_cursor(conn)
+            self._setup_database_internal(cursor, conn)
+
+    def _setup_database_internal(self, cursor, conn):
         # Define types compatible with both DBs
         numeric_type = 'TEXT' if self.db_type == 'sqlite' else 'NUMERIC(18, 5)'
         pk_type = 'INTEGER PRIMARY KEY AUTOINCREMENT' if self.db_type == 'sqlite' else 'SERIAL PRIMARY KEY'
@@ -280,20 +420,57 @@ class TradingDB:
                 );
             """)
 
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS prices (
-                    price_id {pk_type},
-                    symbol TEXT NOT NULL,
-                    timeframe TEXT NOT NULL,
-                    timestamp {timestamp_type} NOT NULL,
-                    open {numeric_type} NOT NULL,
-                    high {numeric_type} NOT NULL,
-                    low {numeric_type} NOT NULL,
-                    close {numeric_type} NOT NULL,
-                    volume BIGINT NOT NULL,
-                    UNIQUE (symbol, timeframe, timestamp)
-                );
-            """)
+            if self.db_type == 'postgres':
+                # Check if prices table exists and if it is partitioned
+                cursor.execute("""
+                    SELECT relkind FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = 'public' AND c.relname = 'prices'
+                """)
+                res = cursor.fetchone()
+                if res and res['relkind'] != 'p':
+                    logging.info("Existing 'prices' table is not partitioned. Migrating...")
+                    cursor.execute("ALTER TABLE prices RENAME TO prices_old")
+                    # We will create the partitioned one below
+
+                cursor.execute(f"""
+                    CREATE TABLE IF NOT EXISTS prices (
+                        symbol TEXT NOT NULL,
+                        timeframe TEXT NOT NULL,
+                        timestamp {timestamp_type} NOT NULL,
+                        open {numeric_type} NOT NULL,
+                        high {numeric_type} NOT NULL,
+                        low {numeric_type} NOT NULL,
+                        close {numeric_type} NOT NULL,
+                        volume BIGINT NOT NULL,
+                        PRIMARY KEY (symbol, timeframe, timestamp)
+                    ) PARTITION BY RANGE (timestamp);
+                """)
+                self._ensure_price_partitions(cursor)
+
+                # If we renamed old, try to copy data
+                if res and res['relkind'] != 'p':
+                    try:
+                        cursor.execute("INSERT INTO prices SELECT symbol, timeframe, timestamp, open, high, low, close, volume FROM prices_old ON CONFLICT DO NOTHING")
+                        cursor.execute("DROP TABLE prices_old")
+                        logging.info("Successfully migrated data to partitioned 'prices' table.")
+                    except Exception as e:
+                        logging.error(f"Failed to migrate data from prices_old: {e}")
+            else:
+                cursor.execute(f"""
+                    CREATE TABLE IF NOT EXISTS prices (
+                        price_id {pk_type},
+                        symbol TEXT NOT NULL,
+                        timeframe TEXT NOT NULL,
+                        timestamp {timestamp_type} NOT NULL,
+                        open {numeric_type} NOT NULL,
+                        high {numeric_type} NOT NULL,
+                        low {numeric_type} NOT NULL,
+                        close {numeric_type} NOT NULL,
+                        volume BIGINT NOT NULL,
+                        UNIQUE (symbol, timeframe, timestamp)
+                    );
+                """)
 
             # Insert sample data for prices if it doesn't exist
             cursor.execute(f"SELECT * FROM prices WHERE symbol = {self.param_style}", ('AAPL',))
@@ -325,98 +502,102 @@ class TradingDB:
                     INSERT INTO ledger (account_id, asset, change, new_balance, description)
                     VALUES ({self.param_style}, 'CASH', {self.param_style}, {self.param_style}, 'Initial account funding')
                 """, (account_id, initial_balance, initial_balance))
-            self.conn.commit()
+            conn.commit()
         except Exception as e:
             logging.error(f"Error setting up database: {e}")
-            self.conn.rollback()
+            conn.rollback()
             raise
         finally:
             cursor.close()
 
     def create_order(self, account_id: Union[int, str], trade_id: str, symbol: str, side: str, order_type: str = 'market', quantity: int = 0, price: Optional[Decimal] = None, time_in_force: str = 'GTC', correlation_id: str = '') -> Optional[int]:
-        cursor = self.get_cursor()
-        try:
-            account_id = int(account_id)
-            query = f"""
-                INSERT INTO orders (account_id, trade_id, symbol, side, order_type, quantity, price, time_in_force, status, correlation_id, client_order_id)
-                VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, 'pending', {self.param_style}, {self.param_style})
-            """
-            params = (account_id, trade_id, symbol.upper(), side.lower(), order_type.lower(), quantity, str(price) if price is not None else None, time_in_force, correlation_id, trade_id)
-            cursor.execute(query, params)
+        with self.connection_scope() as conn:
+            cursor = self.get_cursor(conn)
+            try:
+                account_id = int(account_id)
+                query = f"""
+                    INSERT INTO orders (account_id, trade_id, symbol, side, order_type, quantity, price, time_in_force, status, correlation_id, client_order_id)
+                    VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, 'pending', {self.param_style}, {self.param_style})
+                """
+                params = (account_id, trade_id, symbol.upper(), side.lower(), order_type.lower(), quantity, str(price) if price is not None else None, time_in_force, correlation_id, trade_id)
+                cursor.execute(query, params)
 
-            # Fetch last inserted ID
-            cursor.execute(f"SELECT order_id FROM orders WHERE trade_id = {self.param_style}", (trade_id,))
-            order_id = cursor.fetchone()['order_id']
+                # Fetch last inserted ID
+                cursor.execute(f"SELECT order_id FROM orders WHERE trade_id = {self.param_style}", (trade_id,))
+                order_id = cursor.fetchone()['order_id']
 
-            self.conn.commit()
-            return order_id
-        except (psycopg2.errors.UniqueViolation, sqlite3.IntegrityError):
-            self.conn.rollback()
-            cursor.execute(f"SELECT order_id FROM orders WHERE trade_id = {self.param_style}", (trade_id,))
-            existing = cursor.fetchone()
-            return existing['order_id'] if existing else None
-        except Exception:
-            self.conn.rollback()
-            raise
-        finally:
-            cursor.close()
+                conn.commit()
+                return order_id
+            except (psycopg2.errors.UniqueViolation, sqlite3.IntegrityError):
+                conn.rollback()
+                cursor.execute(f"SELECT order_id FROM orders WHERE trade_id = {self.param_style}", (trade_id,))
+                existing = cursor.fetchone()
+                return existing['order_id'] if existing else None
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                cursor.close()
 
     def get_order_by_id(self, order_id: int) -> Optional[Dict[str, Any]]:
-        cursor = self.get_cursor()
-        try:
-            cursor.execute(f"SELECT * FROM orders WHERE order_id = {self.param_style}", (order_id,))
-            row = cursor.fetchone()
-            return self._format_order_row(row) if row else None
-        finally:
-            cursor.close()
+        with self.connection_scope() as conn:
+            cursor = self.get_cursor(conn)
+            try:
+                cursor.execute(f"SELECT * FROM orders WHERE order_id = {self.param_style}", (order_id,))
+                row = cursor.fetchone()
+                return self._format_order_row(row) if row else None
+            finally:
+                cursor.close()
 
     def get_order_by_trade_id(self, trade_id: Union[int, str]) -> Optional[Dict[str, Any]]:
-        cursor = self.get_cursor()
-        try:
-            cursor.execute(f"SELECT * FROM orders WHERE trade_id = {self.param_style}", (str(trade_id),))
-            row = cursor.fetchone()
-            return self._format_order_row(row) if row else None
-        finally:
-            cursor.close()
+        with self.connection_scope() as conn:
+            cursor = self.get_cursor(conn)
+            try:
+                cursor.execute(f"SELECT * FROM orders WHERE trade_id = {self.param_style}", (str(trade_id),))
+                row = cursor.fetchone()
+                return self._format_order_row(row) if row else None
+            finally:
+                cursor.close()
 
     def update_order(self, order_id: int, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        cursor = self.get_cursor()
-        try:
-            if not updates:
-                return self.get_order_by_id(order_id)
+        with self.connection_scope() as conn:
+            cursor = self.get_cursor(conn)
+            try:
+                if not updates:
+                    return self.get_order_by_id(order_id)
 
-            # Security: Whitelist allowed columns to prevent SQL injection or arbitrary updates
-            ALLOWED_COLUMNS = {
-                'status', 'broker_order_id', 'reason', 'executed_quantity',
-                'avg_execution_price', 'executed_at', 'failure_reason', 'correlation_id'
-            }
+                # Security: Whitelist allowed columns to prevent SQL injection or arbitrary updates
+                ALLOWED_COLUMNS = {
+                    'status', 'broker_order_id', 'reason', 'executed_quantity',
+                    'avg_execution_price', 'executed_at', 'failure_reason', 'correlation_id'
+                }
 
-            set_clauses = []
-            params = []
-            for key, value in updates.items():
-                if key not in ALLOWED_COLUMNS:
-                    logging.warning(f"Ignored disallowed update key: {key}")
-                    continue
+                set_clauses = []
+                params = []
+                for key, value in updates.items():
+                    if key not in ALLOWED_COLUMNS:
+                        logging.warning(f"Ignored disallowed update key: {key}")
+                        continue
 
-                set_clauses.append(f"{key} = {self.param_style}")
-                if isinstance(value, Decimal):
-                    params.append(str(value))
-                else:
-                    params.append(value)
+                    set_clauses.append(f"{key} = {self.param_style}")
+                    if isinstance(value, Decimal):
+                        params.append(str(value))
+                    else:
+                        params.append(value)
 
-            if not set_clauses:
-                return self.get_order_by_id(order_id)
+                if not set_clauses:
+                    return self.get_order_by_id(order_id)
 
-            params.append(order_id)
-            query = f"UPDATE orders SET {', '.join(set_clauses)} WHERE order_id = {self.param_style}"
-            cursor.execute(query, tuple(params))
-            self.conn.commit()
-            return self.get_order_by_id(order_id)
-        except Exception:
-            self.conn.rollback()
-            raise
-        finally:
-            cursor.close()
+                params.append(order_id)
+                query = f"UPDATE orders SET {', '.join(set_clauses)} WHERE order_id = {self.param_style}"
+                cursor.execute(query, tuple(params))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                cursor.close()
+        return self.get_order_by_id(order_id)
 
     def _format_order_row(self, row) -> Dict[str, Any]:
         d = dict(row)
@@ -427,72 +608,76 @@ class TradingDB:
         return d
 
     def execute_order(self, order_id: Union[int, str]) -> (str, Optional[str], Optional[int]):
-        cursor = self.get_cursor()
-        try:
-            order_id = int(order_id)
-            if self.db_type == 'sqlite':
-                cursor.execute("BEGIN IMMEDIATE;")
-            else:
-                cursor.execute("BEGIN;")
+        with self.connection_scope() as conn:
+            cursor = self.get_cursor(conn)
+            try:
+                order_id = int(order_id)
+                if self.db_type == 'sqlite':
+                    cursor.execute("BEGIN IMMEDIATE;")
+                else:
+                    # In Postgres with pool, we rely on the connection's transaction state.
+                    # psycopg2 handles transactions automatically if autocommit is False (default).
+                    # But explicit BEGIN is safer for FOR UPDATE.
+                    cursor.execute("BEGIN;")
 
-            lock_clause = "FOR UPDATE" if self.db_type == 'postgres' else ""
-            cursor.execute(f"SELECT * FROM orders WHERE order_id = {self.param_style} AND status = 'pending' {lock_clause}", (order_id,))
-            order = cursor.fetchone()
-            if not order:
-                cursor.execute(f"SELECT account_id FROM orders WHERE order_id = {self.param_style}", (order_id,))
-                row = cursor.fetchone()
-                aid = row['account_id'] if row else None
-                self.conn.rollback()
-                return 'failed', 'invalid_state', aid
+                lock_clause = "FOR UPDATE" if self.db_type == 'postgres' else ""
+                cursor.execute(f"SELECT * FROM orders WHERE order_id = {self.param_style} AND status = 'pending' {lock_clause}", (order_id,))
+                order = cursor.fetchone()
+                if not order:
+                    cursor.execute(f"SELECT account_id FROM orders WHERE order_id = {self.param_style}", (order_id,))
+                    row = cursor.fetchone()
+                    aid = row['account_id'] if row else None
+                    conn.rollback()
+                    return 'failed', 'invalid_state', aid
 
-            account_id, symbol, side, quantity = order['account_id'], order['symbol'], order['side'].upper(), order['quantity']
-            price = self._to_decimal(order['price'])
-            if price is None:
-                cursor.execute(f"SELECT close FROM prices WHERE symbol = {self.param_style} ORDER BY timestamp DESC LIMIT 1", (symbol,))
-                price_row = cursor.fetchone()
-                price = self._to_decimal(price_row['close']) if price_row else Decimal('100.00')
+                account_id, symbol, side, quantity = order['account_id'], order['symbol'], order['side'].upper(), order['quantity']
+                price = self._to_decimal(order['price'])
+                if price is None:
+                    cursor.execute(f"SELECT close FROM prices WHERE symbol = {self.param_style} ORDER BY timestamp DESC LIMIT 1", (symbol,))
+                    price_row = cursor.fetchone()
+                    price = self._to_decimal(price_row['close']) if price_row else Decimal('100.00')
 
-            total_cost = quantity * price
+                total_cost = quantity * price
 
-            cursor.execute(f"SELECT * FROM accounts WHERE account_id = {self.param_style} {lock_clause}", (account_id,))
-            account = cursor.fetchone()
-            if not account:
-                raise Exception(f"Account {account_id} not found for order {order_id}")
+                cursor.execute(f"SELECT * FROM accounts WHERE account_id = {self.param_style} {lock_clause}", (account_id,))
+                account = cursor.fetchone()
+                if not account:
+                    raise Exception(f"Account {account_id} not found for order {order_id}")
 
-            cash_balance = self._to_decimal(account['cash_balance'])
+                cash_balance = self._to_decimal(account['cash_balance'])
 
-            if side == 'BUY':
-                if cash_balance < total_cost:
-                    self._update_order_status_in_txn(cursor, order_id, 'failed', "insufficient_funds")
-                    self.conn.commit()
-                    return 'failed', 'insufficient_funds', account_id
+                if side == 'BUY':
+                    if cash_balance < total_cost:
+                        self._update_order_status_in_txn(cursor, order_id, 'failed', "insufficient_funds")
+                        conn.commit()
+                        return 'failed', 'insufficient_funds', account_id
 
-                new_balance = cash_balance - total_cost
-                self._update_balance_in_txn(cursor, account_id, new_balance, order_id, -total_cost, f"BUY {quantity} {symbol}")
-                self._update_position_and_ledger_on_buy_in_txn(cursor, account_id, symbol, quantity, price, order_id)
-                self._update_order_execution_in_txn(cursor, order_id, 'executed', quantity, price)
+                    new_balance = cash_balance - total_cost
+                    self._update_balance_in_txn(cursor, account_id, new_balance, order_id, -total_cost, f"BUY {quantity} {symbol}")
+                    self._update_position_and_ledger_on_buy_in_txn(cursor, account_id, symbol, quantity, price, order_id)
+                    self._update_order_execution_in_txn(cursor, order_id, 'executed', quantity, price)
 
-            elif side == 'SELL':
-                cursor.execute(f"SELECT * FROM positions WHERE account_id = {self.param_style} AND symbol = {self.param_style} {lock_clause}", (account_id, symbol))
-                position = cursor.fetchone()
-                if not position or position['quantity'] < quantity:
-                    self._update_order_status_in_txn(cursor, order_id, 'failed', "insufficient_shares")
-                    self.conn.commit()
-                    return 'failed', 'insufficient_shares', account_id
+                elif side == 'SELL':
+                    cursor.execute(f"SELECT * FROM positions WHERE account_id = {self.param_style} AND symbol = {self.param_style} {lock_clause}", (account_id, symbol))
+                    position = cursor.fetchone()
+                    if not position or position['quantity'] < quantity:
+                        self._update_order_status_in_txn(cursor, order_id, 'failed', "insufficient_shares")
+                        conn.commit()
+                        return 'failed', 'insufficient_shares', account_id
 
-                new_balance = cash_balance + total_cost
-                self._update_balance_in_txn(cursor, account_id, new_balance, order_id, total_cost, f"SELL {quantity} {symbol}")
-                self._update_position_and_ledger_on_sell_in_txn(cursor, dict(position), quantity, order_id)
-                self._update_order_execution_in_txn(cursor, order_id, 'executed', quantity, price)
+                    new_balance = cash_balance + total_cost
+                    self._update_balance_in_txn(cursor, account_id, new_balance, order_id, total_cost, f"SELL {quantity} {symbol}")
+                    self._update_position_and_ledger_on_sell_in_txn(cursor, dict(position), quantity, order_id)
+                    self._update_order_execution_in_txn(cursor, order_id, 'executed', quantity, price)
 
-            self.conn.commit()
-            return 'executed', None, account_id
-        except Exception as e:
-            self.conn.rollback()
-            logging.error(f"Failed to execute order {order_id}: {e}", exc_info=True)
-            raise
-        finally:
-            cursor.close()
+                conn.commit()
+                return 'executed', None, account_id
+            except Exception as e:
+                conn.rollback()
+                logging.error(f"Failed to execute order {order_id}: {e}", exc_info=True)
+                raise
+            finally:
+                cursor.close()
 
     def _update_order_status_in_txn(self, cursor, order_id, status, reason=None):
         cursor.execute(
@@ -552,99 +737,141 @@ class TradingDB:
         """, (position['account_id'], order_id, position['symbol'], -sell_quantity, new_quantity, f"SELL {sell_quantity} {position['symbol']}"))
 
     def get_account_balance(self, account_id: Union[int, str]) -> Optional[Decimal]:
-        cursor = self.get_cursor()
-        try:
-            account_id = int(account_id)
-            cursor.execute(f"SELECT cash_balance FROM accounts WHERE account_id = {self.param_style}", (account_id,))
-            result = cursor.fetchone()
-            return self._to_decimal(result['cash_balance']) if result else None
-        finally:
-            cursor.close()
+        with self.connection_scope() as conn:
+            cursor = self.get_cursor(conn)
+            try:
+                account_id = int(account_id)
+                cursor.execute(f"SELECT cash_balance FROM accounts WHERE account_id = {self.param_style}", (account_id,))
+                result = cursor.fetchone()
+                return self._to_decimal(result['cash_balance']) if result else None
+            finally:
+                cursor.close()
 
     def get_positions(self, account_id: Union[int, str]) -> List[Dict[str, Any]]:
-        cursor = self.get_cursor()
-        try:
-            account_id = int(account_id)
-            cursor.execute(f"SELECT * FROM positions WHERE account_id = {self.param_style}", (account_id,))
-            return [{k: self._to_decimal(v) if k == 'average_cost' else v for k, v in dict(row).items()} for row in cursor.fetchall()]
-        finally:
-            cursor.close()
+        with self.connection_scope() as conn:
+            cursor = self.get_cursor(conn)
+            try:
+                account_id = int(account_id)
+                cursor.execute(f"SELECT * FROM positions WHERE account_id = {self.param_style}", (account_id,))
+                return [{k: self._to_decimal(v) if k == 'average_cost' else v for k, v in dict(row).items()} for row in cursor.fetchall()]
+            finally:
+                cursor.close()
 
     def get_order_history(self, account_id: Union[int, str]) -> List[Dict[str, Any]]:
-        cursor = self.get_cursor()
-        try:
-            account_id = int(account_id)
-            cursor.execute(f"SELECT * FROM orders WHERE account_id = {self.param_style} ORDER BY timestamp DESC", (account_id,))
-            return [self._format_order_row(row) for row in cursor.fetchall()]
-        finally:
-            cursor.close()
+        with self.connection_scope() as conn:
+            cursor = self.get_cursor(conn)
+            try:
+                account_id = int(account_id)
+                cursor.execute(f"SELECT * FROM orders WHERE account_id = {self.param_style} ORDER BY timestamp DESC", (account_id,))
+                return [self._format_order_row(row) for row in cursor.fetchall()]
+            finally:
+                cursor.close()
 
     def get_executions(self, account_id: Union[int, str], limit: int = 50, offset: int = 0, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
-        cursor = self.get_cursor()
-        try:
-            account_id = int(account_id)
-            query = f"SELECT * FROM orders WHERE account_id = {self.param_style} AND status = 'executed'"
-            params = [account_id]
+        with self.connection_scope() as conn:
+            cursor = self.get_cursor(conn)
+            try:
+                account_id = int(account_id)
+                query = f"SELECT * FROM orders WHERE account_id = {self.param_style} AND status = 'executed'"
+                params = [account_id]
 
-            if start_date:
-                query += " AND timestamp >= ?"
-                params.append(start_date)
-            if end_date:
-                query += " AND timestamp <= ?"
-                params.append(end_date)
+                if start_date:
+                    query += " AND timestamp >= ?"
+                    params.append(start_date)
+                if end_date:
+                    query += " AND timestamp <= ?"
+                    params.append(end_date)
 
-            query += f" ORDER BY timestamp DESC, order_id DESC LIMIT {self.param_style} OFFSET {self.param_style}"
-            params.extend([limit, offset])
+                query += f" ORDER BY timestamp DESC, order_id DESC LIMIT {self.param_style} OFFSET {self.param_style}"
+                params.extend([limit, offset])
 
-            # Adjust param style for PostgreSQL
-            if self.db_type == 'postgres':
-                query = query.replace('?', '%s')
+                # Adjust param style for PostgreSQL
+                if self.db_type == 'postgres':
+                    query = query.replace('?', '%s')
 
-            cursor.execute(query, tuple(params))
-            trades = []
-            for row in cursor.fetchall():
-                row_dict = self._format_order_row(row)
-                price = row_dict.get('avg_execution_price') or row_dict.get('price')
-                quantity = row_dict.get('executed_quantity') or row_dict.get('quantity')
-                notional = price * quantity if price and quantity else Decimal('0')
+                cursor.execute(query, tuple(params))
+                trades = []
+                for row in cursor.fetchall():
+                    row_dict = self._format_order_row(row)
+                    price = row_dict.get('avg_execution_price') or row_dict.get('price')
+                    quantity = row_dict.get('executed_quantity') or row_dict.get('quantity')
+                    notional = price * quantity if price and quantity else Decimal('0')
 
-                trades.append({
-                    "trade_id": row_dict.get('trade_id') or row_dict.get('order_id'),
-                    "account_id": row_dict.get('account_id'),
-                    "symbol": row_dict.get('symbol'),
-                    "side": row_dict.get('side') or 'buy',
-                    "quantity": quantity,
-                    "price": price,
-                    "notional": notional,
-                    "executed_at": row_dict.get('executed_at') or row_dict.get('timestamp'),
-                    "asset_id": None,
-                    "source_agent": None
-                })
-            return trades
-        finally:
-            cursor.close()
+                    trades.append({
+                        "trade_id": row_dict.get('trade_id') or row_dict.get('order_id'),
+                        "account_id": row_dict.get('account_id'),
+                        "symbol": row_dict.get('symbol'),
+                        "side": row_dict.get('side') or 'buy',
+                        "quantity": quantity,
+                        "price": price,
+                        "notional": notional,
+                        "executed_at": row_dict.get('executed_at') or row_dict.get('timestamp'),
+                        "asset_id": None,
+                        "source_agent": None
+                    })
+                return trades
+            finally:
+                cursor.close()
 
     def get_price_history(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> List[Dict[str, Any]]:
-        cursor = self.get_cursor()
-        try:
-            query = f"SELECT * FROM prices WHERE symbol = {self.param_style} AND timeframe = {self.param_style} ORDER BY timestamp DESC LIMIT {self.param_style}"
-            cursor.execute(query, (symbol.upper(), timeframe, limit))
+        # Try to get from Redis cache
+        cache_key = f"price_history:{symbol.upper()}:{timeframe}:{limit}"
+        if self.redis_client:
+            try:
+                cached_data = self.redis_client.get(cache_key)
+                if cached_data:
+                    data = json.loads(cached_data)
+                    # Convert back to native types
+                    for item in data:
+                        if isinstance(item['timestamp'], str):
+                            item['timestamp'] = datetime.fromisoformat(item['timestamp'].replace('Z', '+00:00'))
+                        for field in ['open', 'high', 'low', 'close']:
+                            item[field] = Decimal(str(item[field]))
+                    return data
+            except Exception as e:
+                logging.error(f"Error reading from Redis: {e}")
 
-            return [
-                {
-                    'symbol': row['symbol'],
-                    'timeframe': row['timeframe'],
-                    'timestamp': row['timestamp'],
-                    'open': self._to_decimal(row['open']),
-                    'high': self._to_decimal(row['high']),
-                    'low': self._to_decimal(row['low']),
-                    'close': self._to_decimal(row['close']),
-                    'volume': row['volume'],
-                }
-                for row in cursor.fetchall()
-            ]
-        finally:
-            cursor.close()
+        with self.connection_scope() as conn:
+            cursor = self.get_cursor(conn)
+            try:
+                query = f"SELECT * FROM prices WHERE symbol = {self.param_style} AND timeframe = {self.param_style} ORDER BY timestamp DESC LIMIT {self.param_style}"
+                cursor.execute(query, (symbol.upper(), timeframe, limit))
+
+                prices = [
+                    {
+                        'symbol': row['symbol'],
+                        'timeframe': row['timeframe'],
+                        'timestamp': row['timestamp'],
+                        'open': self._to_decimal(row['open']),
+                        'high': self._to_decimal(row['high']),
+                        'low': self._to_decimal(row['low']),
+                        'close': self._to_decimal(row['close']),
+                        'volume': row['volume'],
+                    }
+                    for row in cursor.fetchall()
+                ]
+
+                # Store in Redis cache
+                if self.redis_client and prices:
+                    try:
+                        def default_converter(o):
+                            if isinstance(o, datetime):
+                                return o.isoformat()
+                            if isinstance(o, Decimal):
+                                # Store Decimal as string to maintain precision
+                                return str(o)
+
+                        self.redis_client.setex(
+                            cache_key,
+                            60, # Cache for 60 seconds
+                            json.dumps(prices, default=default_converter)
+                        )
+                    except Exception as e:
+                        logging.error(f"Error writing to Redis: {e}")
+
+                return prices
+            finally:
+                cursor.close()
 
     def ingest_historical_prices(self, price_data: List[Dict[str, Any]]):
         if not price_data:
@@ -664,18 +891,19 @@ class TradingDB:
                 ON CONFLICT (symbol, timeframe, timestamp) DO NOTHING;
             """
 
-        cursor = self.get_cursor()
-        try:
-            if self.db_type == 'sqlite':
-                 cursor.executemany(query, price_data)
-            else:
-                psycopg2.extras.execute_batch(cursor, query, price_data)
+        with self.connection_scope() as conn:
+            cursor = self.get_cursor(conn)
+            try:
+                if self.db_type == 'sqlite':
+                     cursor.executemany(query, price_data)
+                else:
+                    psycopg2.extras.execute_batch(cursor, query, price_data)
 
-            self.conn.commit()
-            logging.info(f"Successfully ingested or skipped {len(price_data)} price records.")
-        except Exception as e:
-            logging.error(f"Database error during price ingestion: {e}", exc_info=True)
-            self.conn.rollback()
-            raise
-        finally:
-            cursor.close()
+                conn.commit()
+                logging.info(f"Successfully ingested or skipped {len(price_data)} price records.")
+            except Exception as e:
+                logging.error(f"Database error during price ingestion: {e}", exc_info=True)
+                conn.rollback()
+                raise
+            finally:
+                cursor.close()

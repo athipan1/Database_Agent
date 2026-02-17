@@ -37,20 +37,21 @@ def db_session():
     db.setup_database()
 
     # Clean all tables before each test for a clean slate
-    cursor = db.get_cursor()
-    try:
-        if db.db_type == 'postgres':
-            cursor.execute("TRUNCATE TABLE ledger, orders, positions, accounts RESTART IDENTITY CASCADE;")
-        else: # SQLite
-            cursor.execute("DELETE FROM ledger;")
-            cursor.execute("DELETE FROM orders;")
-            cursor.execute("DELETE FROM positions;")
-            cursor.execute("DELETE FROM accounts;")
-            # Reset autoincrement sequence for accounts in SQLite
-            cursor.execute("DELETE FROM sqlite_sequence WHERE name='accounts';")
-        db.conn.commit()
-    finally:
-        cursor.close()
+    with db.connection_scope() as conn:
+        cursor = db.get_cursor(conn)
+        try:
+            if db.db_type == 'postgres':
+                cursor.execute("TRUNCATE TABLE ledger, orders, positions, accounts RESTART IDENTITY CASCADE;")
+            else: # SQLite
+                cursor.execute("DELETE FROM ledger;")
+                cursor.execute("DELETE FROM orders;")
+                cursor.execute("DELETE FROM positions;")
+                cursor.execute("DELETE FROM accounts;")
+                # Reset autoincrement sequence for accounts in SQLite
+                cursor.execute("DELETE FROM sqlite_sequence WHERE name='accounts';")
+            conn.commit()
+        finally:
+            cursor.close()
 
     # Re-initialize the default account since TRUNCATE/DELETE cleared it
     db.setup_database()
@@ -65,12 +66,13 @@ def test_initial_account_setup(db_session: TradingDB):
     balance = db_session.get_account_balance(ACCOUNT_ID)
     assert balance == Decimal('1000000.00')
 
-    cursor = db_session.get_cursor()
-    try:
-        cursor.execute(f"SELECT * FROM ledger WHERE account_id = {db_session.param_style}", (ACCOUNT_ID,))
-        ledger_entry = cursor.fetchone()
-    finally:
-        cursor.close()
+    with db_session.connection_scope() as conn:
+        cursor = db_session.get_cursor(conn)
+        try:
+            cursor.execute(f"SELECT * FROM ledger WHERE account_id = {db_session.param_style}", (ACCOUNT_ID,))
+            ledger_entry = cursor.fetchone()
+        finally:
+            cursor.close()
 
     assert ledger_entry is not None
     assert ledger_entry['asset'] == 'CASH'
@@ -126,12 +128,13 @@ def test_successful_buy_order(db_session: TradingDB):
     assert order['reason'] is None
 
     # Ledger entries check for full auditability
-    cursor = db_session.get_cursor()
-    try:
-        cursor.execute(f"SELECT * FROM ledger WHERE order_id = {db_session.param_style} ORDER BY entry_id", (order_id,))
-        entries = cursor.fetchall()
-    finally:
-        cursor.close()
+    with db_session.connection_scope() as conn:
+        cursor = db_session.get_cursor(conn)
+        try:
+            cursor.execute(f"SELECT * FROM ledger WHERE order_id = {db_session.param_style} ORDER BY entry_id", (order_id,))
+            entries = cursor.fetchall()
+        finally:
+            cursor.close()
 
     assert len(entries) == 2
     cash_entry = next(e for e in entries if e['asset'] == 'CASH')
@@ -177,12 +180,13 @@ def test_insufficient_funds_buy_order(db_session: TradingDB):
     assert order['reason'] == 'insufficient_funds'
 
     # Verify no ledger entries were created for this failed order
-    cursor = db_session.get_cursor()
-    try:
-        cursor.execute(f"SELECT * FROM ledger WHERE order_id = {db_session.param_style}", (order_id,))
-        assert cursor.fetchone() is None
-    finally:
-        cursor.close()
+    with db_session.connection_scope() as conn:
+        cursor = db_session.get_cursor(conn)
+        try:
+            cursor.execute(f"SELECT * FROM ledger WHERE order_id = {db_session.param_style}", (order_id,))
+            assert cursor.fetchone() is None
+        finally:
+            cursor.close()
 
 def test_idempotency_of_order_creation(db_session: TradingDB):
     """Ensures that creating an order with the same client_order_id is idempotent."""
@@ -261,15 +265,16 @@ def test_get_executions(db_session: TradingDB):
         correlation_id="corr-3"
     )
     # To execute a sell, we first need a position. Let's create one directly for simplicity.
-    cursor = db_session.get_cursor()
-    try:
-        cursor.execute(
-            f"INSERT INTO positions (account_id, symbol, quantity, average_cost) VALUES ({db_session.param_style}, {db_session.param_style}, {db_session.param_style}, {db_session.param_style})",
-            (ACCOUNT_ID, "TSLA", 10, "650.00")
-        )
-        db_session.conn.commit()
-    finally:
-        cursor.close()
+    with db_session.connection_scope() as conn:
+        cursor = db_session.get_cursor(conn)
+        try:
+            cursor.execute(
+                f"INSERT INTO positions (account_id, symbol, quantity, average_cost) VALUES ({db_session.param_style}, {db_session.param_style}, {db_session.param_style}, {db_session.param_style})",
+                (ACCOUNT_ID, "TSLA", 10, "650.00")
+            )
+            conn.commit()
+        finally:
+            cursor.close()
     db_session.execute_order(sell_order_id)
 
     # Test fetching the execution history

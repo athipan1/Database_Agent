@@ -5,6 +5,7 @@ import uuid
 import schedule
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -15,6 +16,8 @@ from fastapi.encoders import jsonable_encoder
 from starlette.responses import Response
 from typing import Optional, Any, TypeVar, Generic, List, Union
 from decimal import Decimal
+from pythonjsonlogger import jsonlogger
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from trading_db import TradingDB
 from alpaca_client import AlpacaClient
@@ -38,15 +41,24 @@ class CorrelationIdFilter(logging.Filter):
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure logging with a placeholder for the correlation ID
-LOG_FORMAT = '%(asctime)s - %(levelname)s - [%(correlation_id)s] - %(message)s'
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+# Configure logging
+log_handler = logging.StreamHandler(sys.stdout)
+formatter = jsonlogger.JsonFormatter(
+    '%(asctime)s %(levelname)s %(name)s %(message)s %(correlation_id)s',
+    timestamp=True
+)
+log_handler.setFormatter(formatter)
+logging.getLogger().addHandler(log_handler)
+logging.getLogger().setLevel(logging.INFO)
 
 # Add our custom filter to the root logger
 logging.getLogger().addFilter(CorrelationIdFilter())
 
 
 app = FastAPI(title="Database Agent - Secure Trading API")
+
+# Initialize Prometheus Instrumentator
+Instrumentator().instrument(app).expose(app)
 
 # --- Middleware for Correlation ID ---
 @app.middleware("http")
@@ -109,33 +121,51 @@ alpaca_client = AlpacaClient(
 )
 
 # --- Scheduled Jobs ---
+def ingest_data_for_symbol_timeframe(symbol: str, timeframe: str, start_date: str, end_date: str):
+    """Worker function for parallel data ingestion."""
+    try:
+        price_data = alpaca_client.fetch_historical_prices(
+            symbol, timeframe, start_date, end_date
+        )
+        if price_data:
+            db.ingest_historical_prices(price_data)
+        else:
+            logging.warning(f"No price data to ingest for {symbol} ({timeframe}).")
+    except Exception as e:
+        logging.error(f"Failed to ingest data for {symbol} ({timeframe}): {e}", exc_info=True)
+
 def run_ingestion_job():
     """
-    Defines the scheduled job to fetch and ingest historical data.
+    Defines the scheduled job to fetch and ingest historical data using parallel threads.
     """
     logging.info("Scheduler starting historical data ingestion job...")
-    symbols_to_fetch = ["GOOG"]
-    timeframes_to_fetch = ["4h", "1d"]
+    # Expanded symbol list for better coverage
+    symbols_to_fetch = ["GOOG", "AAPL", "MSFT", "TSLA", "AMZN", "NVDA", "META"]
+    timeframes_to_fetch = ["1h", "1d"] # Changed 4h to 1h as Alpaca 4h is tricky
 
     # Calculate date range for the last 2 years
     end_date = datetime.now().strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=2*365)).strftime('%Y-%m-%d')
 
+    tasks = []
     for symbol in symbols_to_fetch:
         for timeframe in timeframes_to_fetch:
-            try:
-                price_data = alpaca_client.fetch_historical_prices(
-                    symbol, timeframe, start_date, end_date
-                )
-                if price_data:
-                    db.ingest_historical_prices(price_data)
-                else:
-                    logging.warning(f"No price data to ingest for {symbol} ({timeframe}).")
-            except Exception as e:
-                # Log the error but continue to the next symbol/timeframe
-                logging.error(f"Failed to ingest data for {symbol} ({timeframe}): {e}", exc_info=True)
+            tasks.append((symbol, timeframe))
+
+    # Run ingestion in parallel using a thread pool
+    max_workers = min(len(tasks), 10)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for symbol, timeframe in tasks:
+            executor.submit(ingest_data_for_symbol_timeframe, symbol, timeframe, start_date, end_date)
 
     logging.info("Scheduler finished historical data ingestion job.")
+
+def log_database_stats():
+    """Periodically logs database statistics."""
+    logging.info("Collecting database statistics...")
+    stats = db.get_database_stats()
+    if stats:
+        logging.info("Database Statistics", extra={"db_stats": stats})
 
 def run_scheduler():
     """
@@ -154,9 +184,17 @@ async def startup_event():
         db.setup_database()
         logging.info("Database tables verification/creation complete.")
 
-        # Schedule the job
+        # Schedule ingestion job
         schedule.every().day.at("00:00").do(run_ingestion_job)
         logging.info("Scheduled data ingestion job to run daily at 00:00.")
+
+        # Schedule partition maintenance job
+        schedule.every().day.at("01:00").do(db.ensure_price_partitions)
+        logging.info("Scheduled partition maintenance job to run daily at 01:00.")
+
+        # Schedule stats logging job
+        schedule.every(1).hours.do(log_database_stats)
+        logging.info("Scheduled database stats logging job to run every hour.")
 
         # Run the scheduler in a background thread
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)

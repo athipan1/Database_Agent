@@ -8,3 +8,6 @@ alpaca-py
 tenacity
 schedule
 pytz
+python-json-logger
+prometheus-fastapi-instrumentator
+redis
