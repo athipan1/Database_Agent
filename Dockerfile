@@ -33,16 +33,17 @@ COPY --from=builder /opt/venv /opt/venv
 
 # Activate the virtual environment
 ENV PATH="/opt/venv/bin:$PATH"
+ENV PORT=8004
 
 # Copy the application source code
 COPY --chown=app:app . .
 
 # Expose the port the app will run on
-EXPOSE 8000
+EXPOSE 8004
 
 # Add a healthcheck to ensure the application is responsive
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8000/health || exit 1
+  CMD curl -f http://localhost:8004/health || exit 1
 
 # The command to run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8004"]
