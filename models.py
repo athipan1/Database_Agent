@@ -41,7 +41,7 @@ T = TypeVar("T")
 class StandardAgentResponse(CustomBaseModel, Generic[T]):
     status: Literal["success", "error"]
     agent_type: str = "database"
-    version: str = "1.0"
+    version: str = "1.0.0"
     timestamp: datetime.datetime
     data: Optional[T] = None
     error: Optional[dict] = None
@@ -56,6 +56,12 @@ class Position(CustomBaseModel):
     symbol: str
     quantity: int
     average_cost: Decimal
+
+class PortfolioMetrics(CustomBaseModel):
+    win_rate: float = 0.0
+    average_return: float = 0.0
+    max_drawdown: float = 0.0
+    sharpe_ratio: float = 0.0
 
 class Order(CustomBaseModel):
     order_id: int
