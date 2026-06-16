@@ -23,7 +23,8 @@ from alpaca_client import AlpacaClient
 from models import (
     AccountBalance, Position, Order, CreateOrderBody,
     OrderExecutionResponse, ExecutionTrade, Price, StandardAgentResponse,
-    PortfolioMetrics,
+    PortfolioMetrics, SignalHistory, CreateSignalHistoryBody,
+    PerformanceMetric, CreatePerformanceMetricBody,
 )
 
 # --- Context setup for Correlation ID ---
@@ -35,6 +36,10 @@ load_dotenv()
 DATABASE_DEV_MODE = os.getenv("DATABASE_DEV_MODE", "false").lower() in ("1", "true", "yes", "y")
 DEFAULT_DEV_ACCOUNT_ID = os.getenv("DEFAULT_DEV_ACCOUNT_ID", "1")
 DEFAULT_DEV_CASH_BALANCE = Decimal(os.getenv("DEFAULT_DEV_CASH_BALANCE", "100000"))
+
+# In-memory fallback stores for signal/performance history until TradingDB persistence is added.
+SIGNAL_HISTORY_STORE: List[SignalHistory] = []
+PERFORMANCE_METRICS_STORE: List[PerformanceMetric] = []
 
 # Configure logging
 log_handler = logging.StreamHandler(sys.stdout)
@@ -272,6 +277,61 @@ async def get_portfolio_metrics_for_account(account_id: Union[int, str], api_key
     except Exception as e:
         logging.warning(f"Portfolio metrics lookup failed for account {account_id}: {e}")
     return wrap_response(data=_default_portfolio_metrics())
+
+@app.post("/signals", response_model=StandardAgentResponse[SignalHistory])
+async def create_signal(signal_body: CreateSignalHistoryBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    record = SignalHistory(
+        signal_id=signal_body.signal_id or str(uuid.uuid4()),
+        account_id=signal_body.account_id,
+        symbol=signal_body.symbol.upper(),
+        timestamp=datetime.now(timezone.utc),
+        source_agent=signal_body.source_agent,
+        candidate_score=signal_body.candidate_score,
+        technical_score=signal_body.technical_score,
+        fundamental_score=signal_body.fundamental_score,
+        final_verdict=signal_body.final_verdict,
+        market_regime=signal_body.market_regime,
+        metadata=signal_body.metadata,
+    )
+    SIGNAL_HISTORY_STORE.append(record)
+    return wrap_response(data=record)
+
+@app.get("/signals", response_model=StandardAgentResponse[List[SignalHistory]])
+async def get_signals(account_id: Optional[Union[int, str]] = None, symbol: Optional[str] = None, limit: int = 100, offset: int = 0, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    rows = list(reversed(SIGNAL_HISTORY_STORE))
+    if account_id is not None:
+        rows = [row for row in rows if str(row.account_id) == str(account_id)]
+    if symbol:
+        rows = [row for row in rows if row.symbol.upper() == symbol.upper()]
+    return wrap_response(data=rows[offset: offset + limit])
+
+@app.post("/performance_metrics", response_model=StandardAgentResponse[PerformanceMetric])
+async def create_performance_metric(metric_body: CreatePerformanceMetricBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    record = PerformanceMetric(
+        metric_id=metric_body.metric_id or str(uuid.uuid4()),
+        account_id=metric_body.account_id,
+        symbol=metric_body.symbol.upper(),
+        timestamp=datetime.now(timezone.utc),
+        source_agent=metric_body.source_agent,
+        entry_price=metric_body.entry_price,
+        exit_price=metric_body.exit_price,
+        current_price=metric_body.current_price,
+        return_pct=metric_body.return_pct,
+        holding_days=metric_body.holding_days,
+        outcome=metric_body.outcome,
+        metadata=metric_body.metadata,
+    )
+    PERFORMANCE_METRICS_STORE.append(record)
+    return wrap_response(data=record)
+
+@app.get("/performance_metrics", response_model=StandardAgentResponse[List[PerformanceMetric]])
+async def get_performance_metrics(account_id: Optional[Union[int, str]] = None, symbol: Optional[str] = None, limit: int = 100, offset: int = 0, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    rows = list(reversed(PERFORMANCE_METRICS_STORE))
+    if account_id is not None:
+        rows = [row for row in rows if str(row.account_id) == str(account_id)]
+    if symbol:
+        rows = [row for row in rows if row.symbol.upper() == symbol.upper()]
+    return wrap_response(data=rows[offset: offset + limit])
 
 @app.get("/accounts/{account_id}/orders", response_model=StandardAgentResponse[List[Order]])
 async def get_order_history_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
