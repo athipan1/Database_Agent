@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from typing import Literal, Optional, Any, TypeVar, Generic, List, Union
+from typing import Literal, Optional, Any, TypeVar, Generic, List, Union, Dict
 from decimal import Decimal
 from uuid import UUID
 from enum import Enum
@@ -126,6 +126,58 @@ class ExecutionTrade(CustomBaseModel):
     notional: Decimal
     executed_at: datetime.datetime
     source_agent: Optional[str] = None
+
+class SignalHistory(CustomBaseModel):
+    signal_id: str
+    account_id: Union[int, str]
+    symbol: str
+    timestamp: datetime.datetime
+    source_agent: str = "manager-agent"
+    candidate_score: Optional[float] = None
+    technical_score: Optional[float] = None
+    fundamental_score: Optional[float] = None
+    final_verdict: Optional[str] = None
+    market_regime: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class CreateSignalHistoryBody(CustomBaseModel):
+    signal_id: Optional[str] = None
+    account_id: Union[int, str]
+    symbol: str
+    source_agent: str = "manager-agent"
+    candidate_score: Optional[float] = None
+    technical_score: Optional[float] = None
+    fundamental_score: Optional[float] = None
+    final_verdict: Optional[str] = None
+    market_regime: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class PerformanceMetric(CustomBaseModel):
+    metric_id: str
+    account_id: Union[int, str]
+    symbol: str
+    timestamp: datetime.datetime
+    source_agent: str = "learning-agent"
+    entry_price: Optional[Decimal] = None
+    exit_price: Optional[Decimal] = None
+    current_price: Optional[Decimal] = None
+    return_pct: Optional[float] = None
+    holding_days: Optional[int] = None
+    outcome: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class CreatePerformanceMetricBody(CustomBaseModel):
+    metric_id: Optional[str] = None
+    account_id: Union[int, str]
+    symbol: str
+    source_agent: str = "learning-agent"
+    entry_price: Optional[Decimal] = None
+    exit_price: Optional[Decimal] = None
+    current_price: Optional[Decimal] = None
+    return_pct: Optional[float] = None
+    holding_days: Optional[int] = None
+    outcome: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class Price(CustomBaseModel):
     symbol: str
