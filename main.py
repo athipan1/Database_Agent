@@ -20,6 +20,13 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from trading_db import TradingDB
 from alpaca_client import AlpacaClient
+from history_repository import (
+    create_performance_record,
+    create_signal_record,
+    get_performance_records,
+    get_signal_records,
+    setup_history_tables,
+)
 from models import (
     AccountBalance, Position, Order, CreateOrderBody,
     OrderExecutionResponse, ExecutionTrade, Price, StandardAgentResponse,
@@ -27,21 +34,14 @@ from models import (
     PerformanceMetric, CreatePerformanceMetricBody,
 )
 
-# --- Context setup for Correlation ID ---
 correlation_id_var: ContextVar[Optional[str]] = ContextVar("correlation_id", default=None)
 
-# --- Configuration & Setup ---
 load_dotenv()
 
 DATABASE_DEV_MODE = os.getenv("DATABASE_DEV_MODE", "false").lower() in ("1", "true", "yes", "y")
 DEFAULT_DEV_ACCOUNT_ID = os.getenv("DEFAULT_DEV_ACCOUNT_ID", "1")
 DEFAULT_DEV_CASH_BALANCE = Decimal(os.getenv("DEFAULT_DEV_CASH_BALANCE", "100000"))
 
-# In-memory fallback stores for signal/performance history until TradingDB persistence is added.
-SIGNAL_HISTORY_STORE: List[SignalHistory] = []
-PERFORMANCE_METRICS_STORE: List[PerformanceMetric] = []
-
-# Configure logging
 log_handler = logging.StreamHandler(sys.stdout)
 formatter = jsonlogger.JsonFormatter(
     '%(asctime)s %(levelname)s %(name)s %(message)s %(correlation_id)s',
@@ -52,7 +52,6 @@ logging.getLogger().addHandler(log_handler)
 logging.getLogger().setLevel(logging.INFO)
 
 class CorrelationIdFilter(logging.Filter):
-    """Injects the correlation_id into log records."""
     def filter(self, record):
         record.correlation_id = correlation_id_var.get()
         return True
@@ -75,7 +74,6 @@ async def get_correlation_id() -> str:
     return correlation_id_var.get() or str(uuid.uuid4())
 
 def wrap_response(data: Any = None, status: str = "success", error: Optional[dict] = None):
-    """Wraps the data into the standard agent response format."""
     return {
         "status": status,
         "agent_type": "database",
@@ -86,7 +84,6 @@ def wrap_response(data: Any = None, status: str = "success", error: Optional[dic
         "confidence_score": None,
     }
 
-# API Key Security
 DATABASE_AGENT_API_KEY = os.environ.get("DATABASE_AGENT_API_KEY")
 if not DATABASE_AGENT_API_KEY and not DATABASE_DEV_MODE:
     logging.critical("CRITICAL: DATABASE_AGENT_API_KEY environment variable not set. Application will terminate.")
@@ -94,24 +91,20 @@ if not DATABASE_AGENT_API_KEY and not DATABASE_DEV_MODE:
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
 def get_api_key(api_key_header: str = Security(api_key_header)):
-    """Validate the API key. DATABASE_DEV_MODE allows local integration tests without hard failure."""
     if DATABASE_DEV_MODE and not DATABASE_AGENT_API_KEY:
         return "dev-mode"
     if DATABASE_AGENT_API_KEY and api_key_header == DATABASE_AGENT_API_KEY:
         return api_key_header
     raise HTTPException(status_code=403, detail="Could not validate credentials")
 
-# Database Connection
 db = TradingDB()
 
-# Alpaca API Client
 alpaca_client = AlpacaClient(
     api_key=os.environ.get("ALPACA_API_KEY"),
     secret_key=os.environ.get("ALPACA_SECRET_KEY")
 )
 
 def _mock_price_history(symbol: str, limit: int = 100) -> List[Price]:
-    """Generate deterministic price data for dev/integration mode."""
     now = datetime.now(timezone.utc)
     count = max(1, min(int(limit or 100), 500))
     prices: List[Price] = []
@@ -137,7 +130,6 @@ def _default_portfolio_metrics() -> PortfolioMetrics:
         sharpe_ratio=0.0,
     )
 
-# --- Scheduled Jobs ---
 def ingest_data_for_symbol_timeframe(symbol: str, timeframe: str, start_date: str, end_date: str):
     try:
         price_data = alpaca_client.fetch_historical_prices(symbol, timeframe, start_date, end_date)
@@ -180,6 +172,7 @@ async def startup_event():
     logging.info("Database Agent API starting up.")
     try:
         db.setup_database()
+        setup_history_tables(db)
         logging.info("Database tables verification/creation complete.")
         schedule.every().day.at("00:00").do(run_ingestion_job)
         schedule.every().day.at("01:00").do(db.ensure_price_partitions)
@@ -267,7 +260,6 @@ async def get_positions_for_account(account_id: Union[int, str], api_key: str = 
 
 @app.get("/accounts/{account_id}/portfolio_metrics", response_model=StandardAgentResponse[PortfolioMetrics])
 async def get_portfolio_metrics_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    """Returns portfolio performance metrics expected by Manager_Agent."""
     logging.info(f"Request to get portfolio metrics for account {account_id}.")
     try:
         if hasattr(db, "get_portfolio_metrics"):
@@ -280,58 +272,23 @@ async def get_portfolio_metrics_for_account(account_id: Union[int, str], api_key
 
 @app.post("/signals", response_model=StandardAgentResponse[SignalHistory])
 async def create_signal(signal_body: CreateSignalHistoryBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    record = SignalHistory(
-        signal_id=signal_body.signal_id or str(uuid.uuid4()),
-        account_id=signal_body.account_id,
-        symbol=signal_body.symbol.upper(),
-        timestamp=datetime.now(timezone.utc),
-        source_agent=signal_body.source_agent,
-        candidate_score=signal_body.candidate_score,
-        technical_score=signal_body.technical_score,
-        fundamental_score=signal_body.fundamental_score,
-        final_verdict=signal_body.final_verdict,
-        market_regime=signal_body.market_regime,
-        metadata=signal_body.metadata,
-    )
-    SIGNAL_HISTORY_STORE.append(record)
+    record = create_signal_record(db, signal_body)
     return wrap_response(data=record)
 
 @app.get("/signals", response_model=StandardAgentResponse[List[SignalHistory]])
 async def get_signals(account_id: Optional[Union[int, str]] = None, symbol: Optional[str] = None, limit: int = 100, offset: int = 0, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    rows = list(reversed(SIGNAL_HISTORY_STORE))
-    if account_id is not None:
-        rows = [row for row in rows if str(row.account_id) == str(account_id)]
-    if symbol:
-        rows = [row for row in rows if row.symbol.upper() == symbol.upper()]
-    return wrap_response(data=rows[offset: offset + limit])
+    rows = get_signal_records(db, account_id=account_id, symbol=symbol, limit=limit, offset=offset)
+    return wrap_response(data=rows)
 
 @app.post("/performance_metrics", response_model=StandardAgentResponse[PerformanceMetric])
 async def create_performance_metric(metric_body: CreatePerformanceMetricBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    record = PerformanceMetric(
-        metric_id=metric_body.metric_id or str(uuid.uuid4()),
-        account_id=metric_body.account_id,
-        symbol=metric_body.symbol.upper(),
-        timestamp=datetime.now(timezone.utc),
-        source_agent=metric_body.source_agent,
-        entry_price=metric_body.entry_price,
-        exit_price=metric_body.exit_price,
-        current_price=metric_body.current_price,
-        return_pct=metric_body.return_pct,
-        holding_days=metric_body.holding_days,
-        outcome=metric_body.outcome,
-        metadata=metric_body.metadata,
-    )
-    PERFORMANCE_METRICS_STORE.append(record)
+    record = create_performance_record(db, metric_body)
     return wrap_response(data=record)
 
 @app.get("/performance_metrics", response_model=StandardAgentResponse[List[PerformanceMetric]])
 async def get_performance_metrics(account_id: Optional[Union[int, str]] = None, symbol: Optional[str] = None, limit: int = 100, offset: int = 0, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    rows = list(reversed(PERFORMANCE_METRICS_STORE))
-    if account_id is not None:
-        rows = [row for row in rows if str(row.account_id) == str(account_id)]
-    if symbol:
-        rows = [row for row in rows if row.symbol.upper() == symbol.upper()]
-    return wrap_response(data=rows[offset: offset + limit])
+    rows = get_performance_records(db, account_id=account_id, symbol=symbol, limit=limit, offset=offset)
+    return wrap_response(data=rows)
 
 @app.get("/accounts/{account_id}/orders", response_model=StandardAgentResponse[List[Order]])
 async def get_order_history_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
