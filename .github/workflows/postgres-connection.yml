@@ -2,14 +2,6 @@ name: Railway Postgres Connection Check
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/postgres-connection.yml"
-      - "trading_db.py"
-      - "history_repository.py"
-      - "main.py"
 
 jobs:
   check-postgres:
