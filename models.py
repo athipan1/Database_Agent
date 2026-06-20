@@ -26,6 +26,12 @@ class OrderStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
+class RiskApprovalStatus(str, Enum):
+    APPROVED = "approved"
+    USED = "used"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
 class CustomBaseModel(BaseModel):
     model_config = ConfigDict(
         json_encoders = {
@@ -126,6 +132,31 @@ class ExecutionTrade(CustomBaseModel):
     notional: Decimal
     executed_at: datetime.datetime
     source_agent: Optional[str] = None
+
+class RiskApproval(CustomBaseModel):
+    approval_id: str
+    account_id: Union[int, str]
+    symbol: str
+    side: OrderSide
+    approved_quantity: int
+    status: RiskApprovalStatus = RiskApprovalStatus.APPROVED
+    expires_at: datetime.datetime
+    created_at: Optional[datetime.datetime] = None
+    used_at: Optional[datetime.datetime] = None
+    order_id: Optional[int] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class CreateRiskApprovalBody(CustomBaseModel):
+    approval_id: str
+    account_id: Union[int, str]
+    symbol: str
+    side: OrderSide
+    approved_quantity: int = Field(gt=0)
+    expires_at: datetime.datetime
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class MarkRiskApprovalUsedBody(CustomBaseModel):
+    order_id: int
 
 class SignalHistory(CustomBaseModel):
     signal_id: str
