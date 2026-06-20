@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends, Security, Request, Body
+from fastapi import FastAPI, HTTPException, Depends, Security, Request
 from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
@@ -27,11 +27,18 @@ from history_repository import (
     get_signal_records,
     setup_history_tables,
 )
+from risk_approval_repository import (
+    create_risk_approval,
+    get_risk_approval,
+    mark_risk_approval_used,
+    setup_risk_approval_table,
+)
 from models import (
     AccountBalance, Position, Order, CreateOrderBody,
     OrderExecutionResponse, ExecutionTrade, Price, StandardAgentResponse,
     PortfolioMetrics, SignalHistory, CreateSignalHistoryBody,
     PerformanceMetric, CreatePerformanceMetricBody,
+    RiskApproval, CreateRiskApprovalBody, MarkRiskApprovalUsedBody,
 )
 
 correlation_id_var: ContextVar[Optional[str]] = ContextVar("correlation_id", default=None)
@@ -60,23 +67,23 @@ if TRADING_MODE == "LIVE" and DATABASE_DEV_MODE:
     sys.exit(1)
 
 log_handler = logging.StreamHandler(sys.stdout)
-formatter = jsonlogger.JsonFormatter(
-    '%(asctime)s %(levelname)s %(name)s %(message)s %(correlation_id)s',
-    timestamp=True
-)
+formatter = jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(name)s %(message)s %(correlation_id)s', timestamp=True)
 log_handler.setFormatter(formatter)
 logging.getLogger().addHandler(log_handler)
 logging.getLogger().setLevel(logging.INFO)
+
 
 class CorrelationIdFilter(logging.Filter):
     def filter(self, record):
         record.correlation_id = correlation_id_var.get()
         return True
 
+
 logging.getLogger().addFilter(CorrelationIdFilter())
 
 app = FastAPI(title="Database Agent - Secure Trading API")
 Instrumentator().instrument(app).expose(app)
+
 
 @app.middleware("http")
 async def correlation_id_middleware(request: Request, call_next):
@@ -87,8 +94,10 @@ async def correlation_id_middleware(request: Request, call_next):
     correlation_id_var.reset(token)
     return response
 
+
 async def get_correlation_id() -> str:
     return correlation_id_var.get() or str(uuid.uuid4())
+
 
 def wrap_response(data: Any = None, status: str = "success", error: Optional[dict] = None):
     return {
@@ -101,11 +110,13 @@ def wrap_response(data: Any = None, status: str = "success", error: Optional[dic
         "confidence_score": None,
     }
 
+
 DATABASE_AGENT_API_KEY = os.environ.get("DATABASE_AGENT_API_KEY")
 if not DATABASE_AGENT_API_KEY and not DATABASE_DEV_MODE:
     logging.critical("CRITICAL: DATABASE_AGENT_API_KEY environment variable not set. Application will terminate.")
     sys.exit(1)
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
+
 
 def get_api_key(api_key_header: str = Security(api_key_header)):
     if DATABASE_DEV_MODE and not DATABASE_AGENT_API_KEY:
@@ -114,12 +125,14 @@ def get_api_key(api_key_header: str = Security(api_key_header)):
         return api_key_header
     raise HTTPException(status_code=403, detail="Could not validate credentials")
 
+
 db = TradingDB()
 
 alpaca_client = AlpacaClient(
     api_key=os.environ.get("ALPACA_API_KEY"),
     secret_key=os.environ.get("ALPACA_SECRET_KEY")
 )
+
 
 def _mock_price_history(symbol: str, limit: int = 100) -> List[Price]:
     now = datetime.now(timezone.utc)
@@ -139,13 +152,10 @@ def _mock_price_history(symbol: str, limit: int = 100) -> List[Price]:
         ))
     return prices
 
+
 def _default_portfolio_metrics() -> PortfolioMetrics:
-    return PortfolioMetrics(
-        win_rate=0.0,
-        average_return=0.0,
-        max_drawdown=0.0,
-        sharpe_ratio=0.0,
-    )
+    return PortfolioMetrics(win_rate=0.0, average_return=0.0, max_drawdown=0.0, sharpe_ratio=0.0)
+
 
 def ingest_data_for_symbol_timeframe(symbol: str, timeframe: str, start_date: str, end_date: str):
     try:
@@ -156,6 +166,7 @@ def ingest_data_for_symbol_timeframe(symbol: str, timeframe: str, start_date: st
             logging.warning(f"No price data to ingest for {symbol} ({timeframe}).")
     except Exception as e:
         logging.error(f"Failed to ingest data for {symbol} ({timeframe}): {e}", exc_info=True)
+
 
 def run_ingestion_job():
     logging.info("Scheduler starting historical data ingestion job...")
@@ -170,6 +181,7 @@ def run_ingestion_job():
             executor.submit(ingest_data_for_symbol_timeframe, symbol, timeframe, start_date, end_date)
     logging.info("Scheduler finished historical data ingestion job.")
 
+
 def log_database_stats():
     logging.info("Collecting database statistics...")
     try:
@@ -179,10 +191,12 @@ def log_database_stats():
     except Exception as e:
         logging.warning(f"Could not collect database stats: {e}")
 
+
 def run_scheduler():
     while True:
         schedule.run_pending()
         time.sleep(1)
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -190,6 +204,7 @@ async def startup_event():
     try:
         db.setup_database()
         setup_history_tables(db)
+        setup_risk_approval_table(db)
         logging.info("Database tables verification/creation complete.")
         schedule.every().day.at("00:00").do(run_ingestion_job)
         schedule.every().day.at("01:00").do(db.ensure_price_partitions)
@@ -203,9 +218,11 @@ async def startup_event():
             raise
         logging.warning("DATABASE_DEV_MODE is enabled, continuing startup with fallback responses.")
 
+
 @app.on_event("shutdown")
 async def shutdown_event():
     logging.info("Database Agent API shutting down.")
+
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
@@ -213,13 +230,10 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         status_code=exc.status_code,
         content=jsonable_encoder(wrap_response(
             status="error",
-            error={
-                "code": str(exc.status_code),
-                "message": exc.detail,
-                "retryable": False,
-            }
+            error={"code": str(exc.status_code), "message": exc.detail, "retryable": False}
         ))
     )
+
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
@@ -228,13 +242,10 @@ async def general_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content=jsonable_encoder(wrap_response(
             status="error",
-            error={
-                "code": "INTERNAL_SERVER_ERROR",
-                "message": str(exc),
-                "retryable": False,
-            }
+            error={"code": "INTERNAL_SERVER_ERROR", "message": str(exc), "retryable": False}
         ))
     )
+
 
 @app.get("/health", response_model=StandardAgentResponse[dict])
 async def health_check():
@@ -244,13 +255,38 @@ async def health_check():
     except Exception as e:
         logging.warning(f"Health check database connection failed: {e}")
         is_connected = False
-    health_data = {
+    return wrap_response(data={
         "status": "healthy" if is_connected or DATABASE_DEV_MODE else "unhealthy",
         "database_connection": "connected" if is_connected else "dev_fallback" if DATABASE_DEV_MODE else "disconnected",
         "dev_mode": DATABASE_DEV_MODE,
         "trading_mode": TRADING_MODE,
-    }
-    return wrap_response(data=health_data)
+    })
+
+
+@app.post("/risk-approvals", response_model=StandardAgentResponse[RiskApproval])
+async def create_risk_approval_endpoint(body: CreateRiskApprovalBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    logging.info(f"Request to create risk approval {body.approval_id} for {body.symbol}.")
+    try:
+        record = create_risk_approval(db, body)
+    except Exception as e:
+        logging.error(f"Risk approval creation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    return wrap_response(data=record)
+
+
+@app.get("/risk-approvals/{approval_id}", response_model=StandardAgentResponse[RiskApproval])
+async def get_risk_approval_endpoint(approval_id: str, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    record = get_risk_approval(db, approval_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Risk approval {approval_id} not found")
+    return wrap_response(data=record)
+
+
+@app.post("/risk-approvals/{approval_id}/use", response_model=StandardAgentResponse[RiskApproval])
+async def mark_risk_approval_used_endpoint(approval_id: str, body: MarkRiskApprovalUsedBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    record = mark_risk_approval_used(db, approval_id, body.order_id)
+    return wrap_response(data=record)
+
 
 @app.get("/accounts/{account_id}/balance", response_model=StandardAgentResponse[AccountBalance])
 async def get_balance(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
@@ -266,6 +302,7 @@ async def get_balance(account_id: Union[int, str], api_key: str = Depends(get_ap
         raise HTTPException(status_code=404, detail=f"Account {account_id} not found")
     return wrap_response(data=AccountBalance(account_id=account_id, cash_balance=balance))
 
+
 @app.get("/accounts/{account_id}/positions", response_model=StandardAgentResponse[List[Position]])
 async def get_positions_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     logging.info(f"Request to get positions for account {account_id}.")
@@ -275,6 +312,7 @@ async def get_positions_for_account(account_id: Union[int, str], api_key: str = 
         logging.warning(f"Positions lookup failed for account {account_id}: {e}")
         positions = []
     return wrap_response(data=positions or [])
+
 
 @app.get("/accounts/{account_id}/orders", response_model=StandardAgentResponse[List[Order]])
 async def get_orders_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
@@ -286,6 +324,7 @@ async def get_orders_for_account(account_id: Union[int, str], api_key: str = Dep
         orders = []
     return wrap_response(data=orders or [])
 
+
 @app.post("/accounts/{account_id}/orders", response_model=StandardAgentResponse[Order])
 async def create_order_for_account(account_id: Union[int, str], body: CreateOrderBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     logging.info(f"Request to create order for account {account_id}, symbol {body.symbol}.")
@@ -295,6 +334,7 @@ async def create_order_for_account(account_id: Union[int, str], body: CreateOrde
         logging.error(f"Order creation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     return wrap_response(data=order)
+
 
 @app.post("/accounts/{account_id}/orders/{order_id}/execute", response_model=StandardAgentResponse[OrderExecutionResponse])
 async def execute_order_for_account(account_id: Union[int, str], order_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
@@ -306,6 +346,7 @@ async def execute_order_for_account(account_id: Union[int, str], order_id: Union
         raise HTTPException(status_code=500, detail=str(e))
     return wrap_response(data=result)
 
+
 @app.get("/accounts/{account_id}/trades", response_model=StandardAgentResponse[List[ExecutionTrade]])
 async def get_trades_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     logging.info(f"Request to get trades for account {account_id}.")
@@ -315,6 +356,7 @@ async def get_trades_for_account(account_id: Union[int, str], api_key: str = Dep
         logging.warning(f"Trade history lookup failed for account {account_id}: {e}")
         trades = []
     return wrap_response(data=trades or [])
+
 
 @app.get("/accounts/{account_id}/portfolio/metrics", response_model=StandardAgentResponse[PortfolioMetrics])
 async def get_portfolio_metrics(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
@@ -331,6 +373,7 @@ async def get_portfolio_metrics(account_id: Union[int, str], api_key: str = Depe
             raise HTTPException(status_code=404, detail=f"Portfolio metrics not found for account {account_id}")
     return wrap_response(data=metrics)
 
+
 @app.get("/prices/{symbol}/history", response_model=StandardAgentResponse[List[Price]])
 async def get_price_history(symbol: str, limit: int = 100, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     logging.info(f"Request to get price history for symbol {symbol} with limit {limit}.")
@@ -343,6 +386,7 @@ async def get_price_history(symbol: str, limit: int = 100, api_key: str = Depend
         prices = _mock_price_history(symbol, limit)
     return wrap_response(data=prices or [])
 
+
 @app.post("/signals", response_model=StandardAgentResponse[SignalHistory])
 async def create_signal(body: CreateSignalHistoryBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     try:
@@ -351,6 +395,7 @@ async def create_signal(body: CreateSignalHistoryBody, api_key: str = Depends(ge
         logging.error(f"Signal history creation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     return wrap_response(data=record)
+
 
 @app.get("/signals", response_model=StandardAgentResponse[List[SignalHistory]])
 async def get_signals(account_id: Optional[Union[int, str]] = None, symbol: Optional[str] = None, limit: int = 100, offset: int = 0, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
@@ -361,6 +406,7 @@ async def get_signals(account_id: Optional[Union[int, str]] = None, symbol: Opti
         raise HTTPException(status_code=500, detail=str(e))
     return wrap_response(data=records)
 
+
 @app.post("/performance-metrics", response_model=StandardAgentResponse[PerformanceMetric])
 async def create_performance_metric(body: CreatePerformanceMetricBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     try:
@@ -370,6 +416,7 @@ async def create_performance_metric(body: CreatePerformanceMetricBody, api_key: 
         raise HTTPException(status_code=500, detail=str(e))
     return wrap_response(data=record)
 
+
 @app.get("/performance-metrics", response_model=StandardAgentResponse[List[PerformanceMetric]])
 async def get_performance_metrics(account_id: Optional[Union[int, str]] = None, symbol: Optional[str] = None, limit: int = 100, offset: int = 0, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     try:
@@ -378,6 +425,7 @@ async def get_performance_metrics(account_id: Optional[Union[int, str]] = None, 
         logging.error(f"Performance metric lookup failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     return wrap_response(data=records)
+
 
 @app.get("/")
 def read_root():
