@@ -1,5 +1,9 @@
+import os
 from decimal import Decimal
 from unittest.mock import patch
+
+os.environ.setdefault("ALPACA_API_KEY", "test-alpaca-key")
+os.environ.setdefault("ALPACA_SECRET_KEY", "test-alpaca-secret")
 
 from fastapi.testclient import TestClient
 
