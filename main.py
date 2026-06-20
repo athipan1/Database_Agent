@@ -38,9 +38,26 @@ correlation_id_var: ContextVar[Optional[str]] = ContextVar("correlation_id", def
 
 load_dotenv()
 
-DATABASE_DEV_MODE = os.getenv("DATABASE_DEV_MODE", "false").lower() in ("1", "true", "yes", "y")
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+TRADING_MODE = os.getenv("TRADING_MODE", "PAPER").strip().upper()
+DATABASE_DEV_MODE = _env_bool("DATABASE_DEV_MODE", False)
 DEFAULT_DEV_ACCOUNT_ID = os.getenv("DEFAULT_DEV_ACCOUNT_ID", "1")
 DEFAULT_DEV_CASH_BALANCE = Decimal(os.getenv("DEFAULT_DEV_CASH_BALANCE", "100000"))
+
+if TRADING_MODE not in {"PAPER", "LIVE"}:
+    logging.critical("CRITICAL: TRADING_MODE must be PAPER or LIVE. Application will terminate.")
+    sys.exit(1)
+
+if TRADING_MODE == "LIVE" and DATABASE_DEV_MODE:
+    logging.critical("CRITICAL: DATABASE_DEV_MODE=true is forbidden when TRADING_MODE=LIVE. Application will terminate.")
+    sys.exit(1)
 
 log_handler = logging.StreamHandler(sys.stdout)
 formatter = jsonlogger.JsonFormatter(
@@ -231,6 +248,7 @@ async def health_check():
         "status": "healthy" if is_connected or DATABASE_DEV_MODE else "unhealthy",
         "database_connection": "connected" if is_connected else "dev_fallback" if DATABASE_DEV_MODE else "disconnected",
         "dev_mode": DATABASE_DEV_MODE,
+        "trading_mode": TRADING_MODE,
     }
     return wrap_response(data=health_data)
 
@@ -258,156 +276,109 @@ async def get_positions_for_account(account_id: Union[int, str], api_key: str = 
         positions = []
     return wrap_response(data=positions or [])
 
-@app.get("/accounts/{account_id}/portfolio_metrics", response_model=StandardAgentResponse[PortfolioMetrics])
-async def get_portfolio_metrics_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    logging.info(f"Request to get portfolio metrics for account {account_id}.")
-    try:
-        if hasattr(db, "get_portfolio_metrics"):
-            metrics = db.get_portfolio_metrics(account_id)
-            if metrics:
-                return wrap_response(data=PortfolioMetrics.model_validate(metrics))
-    except Exception as e:
-        logging.warning(f"Portfolio metrics lookup failed for account {account_id}: {e}")
-    return wrap_response(data=_default_portfolio_metrics())
-
-@app.post("/signals", response_model=StandardAgentResponse[SignalHistory])
-async def create_signal(signal_body: CreateSignalHistoryBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    record = create_signal_record(db, signal_body)
-    return wrap_response(data=record)
-
-@app.get("/signals", response_model=StandardAgentResponse[List[SignalHistory]])
-async def get_signals(account_id: Optional[Union[int, str]] = None, symbol: Optional[str] = None, limit: int = 100, offset: int = 0, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    rows = get_signal_records(db, account_id=account_id, symbol=symbol, limit=limit, offset=offset)
-    return wrap_response(data=rows)
-
-@app.post("/performance_metrics", response_model=StandardAgentResponse[PerformanceMetric])
-async def create_performance_metric(metric_body: CreatePerformanceMetricBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    record = create_performance_record(db, metric_body)
-    return wrap_response(data=record)
-
-@app.get("/performance_metrics", response_model=StandardAgentResponse[List[PerformanceMetric]])
-async def get_performance_metrics(account_id: Optional[Union[int, str]] = None, symbol: Optional[str] = None, limit: int = 100, offset: int = 0, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    rows = get_performance_records(db, account_id=account_id, symbol=symbol, limit=limit, offset=offset)
-    return wrap_response(data=rows)
-
 @app.get("/accounts/{account_id}/orders", response_model=StandardAgentResponse[List[Order]])
-async def get_order_history_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    logging.info(f"Request to get order history for account {account_id}.")
+async def get_orders_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    logging.info(f"Request to get orders for account {account_id}.")
     try:
-        orders_data = db.get_order_history(account_id)
-        orders = [Order.model_validate(o) for o in orders_data]
+        orders = db.get_orders(account_id)
     except Exception as e:
-        logging.warning(f"Order history lookup failed for account {account_id}: {e}")
+        logging.warning(f"Orders lookup failed for account {account_id}: {e}")
         orders = []
-    return wrap_response(data=orders)
+    return wrap_response(data=orders or [])
 
-@app.post("/accounts/{account_id}/orders", response_model=Order, status_code=201)
-async def create_new_order(account_id: Union[int, str], order_body: CreateOrderBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    logging.info(f"Request to create new order for account {account_id}.")
-    trade_id = order_body.trade_id or order_body.client_order_id or str(uuid.uuid4())
+@app.post("/accounts/{account_id}/orders", response_model=StandardAgentResponse[Order])
+async def create_order_for_account(account_id: Union[int, str], body: CreateOrderBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    logging.info(f"Request to create order for account {account_id}, symbol {body.symbol}.")
     try:
-        order_id = db.create_order(
-            account_id=account_id,
-            trade_id=str(trade_id),
-            symbol=order_body.symbol,
-            side=order_body.side,
-            order_type=order_body.order_type,
-            quantity=order_body.quantity,
-            price=order_body.price,
-            time_in_force=order_body.time_in_force,
-            correlation_id=correlation_id,
-        )
-        if order_id is None:
-            raise RuntimeError("Database returned no order_id")
-        order_data = db.get_order_by_id(order_id)
-        return Order.model_validate(order_data)
+        order = db.create_order(account_id, body)
     except Exception as e:
-        logging.warning(f"Create order failed: {e}")
-        if DATABASE_DEV_MODE:
-            return Order(
-                order_id=1,
-                trade_id=str(trade_id),
-                account_id=account_id,
-                symbol=order_body.symbol,
-                side=order_body.side,
-                order_type=order_body.order_type,
-                quantity=order_body.quantity,
-                price=order_body.price or Decimal("0"),
-                time_in_force=order_body.time_in_force,
-                status="pending",
-                reason="Created by DATABASE_DEV_MODE fallback",
-            )
-        raise HTTPException(status_code=500, detail="Failed to create order due to a database error.")
-
-@app.get("/orders/{order_id}", response_model=Order)
-async def get_order(order_id: int, api_key: str = Depends(get_api_key)):
-    try:
-        order_data = db.get_order_by_id(order_id)
-    except Exception:
-        order_data = None
-    if not order_data:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return Order.model_validate(order_data)
-
-@app.get("/orders/trade/{trade_id}", response_model=Order)
-async def get_order_by_trade(trade_id: str, api_key: str = Depends(get_api_key)):
-    try:
-        order_data = db.get_order_by_trade_id(trade_id)
-    except Exception:
-        order_data = None
-    if not order_data:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return Order.model_validate(order_data)
-
-@app.patch("/orders/{order_id}", response_model=Order)
-async def update_order(order_id: int, updates: dict = Body(...), api_key: str = Depends(get_api_key)):
-    try:
-        order_data = db.update_order(order_id, updates)
-    except Exception:
-        order_data = None
-    if not order_data:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return Order.model_validate(order_data)
+        logging.error(f"Order creation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    return wrap_response(data=order)
 
 @app.post("/accounts/{account_id}/orders/{order_id}/execute", response_model=StandardAgentResponse[OrderExecutionResponse])
-async def execute_existing_order(account_id: str, order_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+async def execute_order_for_account(account_id: Union[int, str], order_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     logging.info(f"Request to execute order {order_id} for account {account_id}.")
     try:
-        status, reason, ret_account_id = db.execute_order(order_id)
+        result = db.execute_order(account_id, order_id)
     except Exception as e:
-        logging.warning(f"Execute order failed: {e}")
-        if DATABASE_DEV_MODE:
-            status, reason, ret_account_id = "executed", "Executed by DATABASE_DEV_MODE fallback", account_id
-        else:
-            raise HTTPException(status_code=500, detail="An unexpected internal server error occurred.")
-    return wrap_response(data=OrderExecutionResponse(
-        order_id=int(order_id),
-        trade_id=None,
-        account_id=ret_account_id,
-        status=status,
-        reason=reason,
-    ))
+        logging.error(f"Order execution failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    return wrap_response(data=result)
 
-@app.get("/accounts/{account_id}/trade_history", response_model=StandardAgentResponse[List[ExecutionTrade]])
-async def get_trade_history_for_account(account_id: Union[int, str], limit: int = 50, offset: int = 0, start_date: Optional[str] = None, end_date: Optional[str] = None, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    logging.info(f"Request to get trade history for account {account_id}.")
+@app.get("/accounts/{account_id}/trades", response_model=StandardAgentResponse[List[ExecutionTrade]])
+async def get_trades_for_account(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    logging.info(f"Request to get trades for account {account_id}.")
     try:
-        trades = db.get_executions(account_id, limit, offset, start_date, end_date)
+        trades = db.get_trade_history(account_id)
     except Exception as e:
         logging.warning(f"Trade history lookup failed for account {account_id}: {e}")
         trades = []
     return wrap_response(data=trades or [])
 
-@app.get("/accounts/{account_id}/prices/{symbol}", response_model=StandardAgentResponse[List[Price]])
-async def get_price_history_for_symbol(account_id: str, symbol: str, timeframe: str = '1h', limit: int = 100, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
-    logging.info(f"Request to get price history for symbol {symbol} (Context: Account {account_id}).")
+@app.get("/accounts/{account_id}/portfolio/metrics", response_model=StandardAgentResponse[PortfolioMetrics])
+async def get_portfolio_metrics(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    logging.info(f"Request to get portfolio metrics for account {account_id}.")
     try:
-        prices = db.get_price_history(symbol, timeframe, limit)
+        metrics = db.get_portfolio_metrics(account_id)
+    except Exception as e:
+        logging.warning(f"Portfolio metrics lookup failed for account {account_id}: {e}")
+        metrics = None
+    if metrics is None:
+        if DATABASE_DEV_MODE:
+            metrics = _default_portfolio_metrics()
+        else:
+            raise HTTPException(status_code=404, detail=f"Portfolio metrics not found for account {account_id}")
+    return wrap_response(data=metrics)
+
+@app.get("/prices/{symbol}/history", response_model=StandardAgentResponse[List[Price]])
+async def get_price_history(symbol: str, limit: int = 100, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    logging.info(f"Request to get price history for symbol {symbol} with limit {limit}.")
+    try:
+        prices = db.get_price_history(symbol.upper(), limit)
     except Exception as e:
         logging.warning(f"Price history lookup failed for {symbol}: {e}")
         prices = []
-    if not prices:
-        if DATABASE_DEV_MODE:
-            return wrap_response(data=_mock_price_history(symbol, limit))
-        raise HTTPException(status_code=404, detail=f"No price data found for symbol {symbol}")
-    return wrap_response(data=prices)
+    if not prices and DATABASE_DEV_MODE:
+        prices = _mock_price_history(symbol, limit)
+    return wrap_response(data=prices or [])
+
+@app.post("/signals", response_model=StandardAgentResponse[SignalHistory])
+async def create_signal(body: CreateSignalHistoryBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    try:
+        record = create_signal_record(db, body)
+    except Exception as e:
+        logging.error(f"Signal history creation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    return wrap_response(data=record)
+
+@app.get("/signals", response_model=StandardAgentResponse[List[SignalHistory]])
+async def get_signals(account_id: Optional[Union[int, str]] = None, symbol: Optional[str] = None, limit: int = 100, offset: int = 0, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    try:
+        records = get_signal_records(db, account_id=account_id, symbol=symbol, limit=limit, offset=offset)
+    except Exception as e:
+        logging.error(f"Signal history lookup failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    return wrap_response(data=records)
+
+@app.post("/performance-metrics", response_model=StandardAgentResponse[PerformanceMetric])
+async def create_performance_metric(body: CreatePerformanceMetricBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    try:
+        record = create_performance_record(db, body)
+    except Exception as e:
+        logging.error(f"Performance metric creation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    return wrap_response(data=record)
+
+@app.get("/performance-metrics", response_model=StandardAgentResponse[List[PerformanceMetric]])
+async def get_performance_metrics(account_id: Optional[Union[int, str]] = None, symbol: Optional[str] = None, limit: int = 100, offset: int = 0, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    try:
+        records = get_performance_records(db, account_id=account_id, symbol=symbol, limit=limit, offset=offset)
+    except Exception as e:
+        logging.error(f"Performance metric lookup failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    return wrap_response(data=records)
+
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the Database Agent API"}
