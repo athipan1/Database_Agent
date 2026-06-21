@@ -111,22 +111,26 @@ def calculate_fill_pnl(
     if side_norm == "sell" and entry is not None:
         gross_pnl = (price - entry) * qty
     elif side_norm == "buy" and entry is not None:
-        # Covering short positions can be represented with side=buy and entry price.
         gross_pnl = (entry - price) * qty
 
     realized_pnl = gross_pnl - fee_value
-    return {
-        "gross_pnl": gross_pnl,
-        "fees": fee_value,
-        "realized_pnl": realized_pnl,
-    }
+    return {"gross_pnl": gross_pnl, "fees": fee_value, "realized_pnl": realized_pnl}
 
 
 def _format_fill_row(db, row) -> Dict[str, Any]:
+    import json
     data = dict(row)
     for field in ["fill_price", "average_entry_price", "gross_pnl", "fees", "realized_pnl"]:
         if field in data:
             data[field] = db._to_decimal(data[field])
+    metadata = data.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            data["metadata"] = json.loads(metadata)
+        except Exception:
+            data["metadata"] = {}
+    elif metadata is None:
+        data["metadata"] = {}
     return data
 
 
@@ -161,13 +165,7 @@ def create_fill_record(
             if entry is None:
                 entry = _position_average_cost(db, cursor, account_id_int, symbol_upper)
 
-            pnl = calculate_fill_pnl(
-                side=side_norm,
-                quantity=quantity,
-                fill_price=fill_price,
-                average_entry_price=entry,
-                fees=fees,
-            )
+            pnl = calculate_fill_pnl(side=side_norm, quantity=quantity, fill_price=fill_price, average_entry_price=entry, fees=fees)
             if realized_pnl is not None:
                 pnl["realized_pnl"] = _as_decimal(realized_pnl)
 
@@ -190,23 +188,9 @@ def create_fill_record(
                     {db.param_style}, {db.param_style}
                 )
             """, (
-                account_id_int,
-                order_id,
-                str(trade_id) if trade_id is not None else None,
-                symbol_upper,
-                side_norm,
-                int(quantity),
-                str(_as_decimal(fill_price)),
-                str(entry) if entry is not None else None,
-                str(pnl["gross_pnl"]),
-                str(pnl["fees"]),
-                str(pnl["realized_pnl"]),
-                broker_fill_id,
-                broker_order_id,
-                liquidity,
-                filled_at_value,
-                correlation_id,
-                metadata_text,
+                account_id_int, order_id, str(trade_id) if trade_id is not None else None, symbol_upper, side_norm, int(quantity),
+                str(_as_decimal(fill_price)), str(entry) if entry is not None else None, str(pnl["gross_pnl"]), str(pnl["fees"]), str(pnl["realized_pnl"]),
+                broker_fill_id, broker_order_id, liquidity, filled_at_value, correlation_id, metadata_text,
             ))
             if getattr(db, "db_type", "postgres") == "sqlite":
                 fill_id = cursor.lastrowid
