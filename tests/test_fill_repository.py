@@ -35,7 +35,29 @@ class FakeCursor:
                 "created_at": "2026-06-21T15:00:00+00:00",
             }
         elif query.strip().startswith("SELECT * FROM fills WHERE account_id"):
-            self.rows = [{"fill_id": 1, "account_id": 1, "order_id": 10, "trade_id": "t-1", "symbol": "AAPL", "side": "sell", "quantity": 2, "fill_price": "110", "average_entry_price": "100", "gross_pnl": "20", "fees": "1", "realized_pnl": "19", "broker_fill_id": "bf-1", "broker_order_id": "bo-1", "liquidity": "taker", "filled_at": "2026-06-21T15:00:00+00:00", "correlation_id": "corr-1", "metadata": '{}", "created_at": "2026-06-21T15:00:00+00:00"}]
+            self.rows = [
+                {
+                    "fill_id": 1,
+                    "account_id": 1,
+                    "order_id": 10,
+                    "trade_id": "t-1",
+                    "symbol": "AAPL",
+                    "side": "sell",
+                    "quantity": 2,
+                    "fill_price": "110",
+                    "average_entry_price": "100",
+                    "gross_pnl": "20",
+                    "fees": "1",
+                    "realized_pnl": "19",
+                    "broker_fill_id": "bf-1",
+                    "broker_order_id": "bo-1",
+                    "liquidity": "taker",
+                    "filled_at": "2026-06-21T15:00:00+00:00",
+                    "correlation_id": "corr-1",
+                    "metadata": "{}",
+                    "created_at": "2026-06-21T15:00:00+00:00",
+                }
+            ]
 
     def fetchone(self):
         return self.fetchone_result
