@@ -168,6 +168,10 @@ def _order_body_to_create_args(account_id: Union[int, str], body: CreateOrderBod
         "quantity": int(body.quantity),
         "price": body.price,
         "time_in_force": body.time_in_force.value if hasattr(body.time_in_force, "value") else str(body.time_in_force),
+        "risk_approval_id": body.risk_approval_id,
+        "final_quantity": body.final_quantity,
+        "guard_plan": body.guard_plan,
+        "protective_exit": body.protective_exit,
         "correlation_id": correlation_id,
     }
 
