@@ -46,6 +46,11 @@ from execution_job_repository import (
     setup_execution_job_table,
     update_execution_job,
 )
+from fill_repository import (
+    create_fill_record,
+    get_fill_records,
+    setup_fill_table,
+)
 from session_risk_repository import build_session_risk_snapshot
 from models import (
     AccountBalance, Position, Order, CreateOrderBody,
@@ -54,6 +59,7 @@ from models import (
     PerformanceMetric, CreatePerformanceMetricBody,
     RiskApproval, CreateRiskApprovalBody, MarkRiskApprovalUsedBody,
     ExecutionJob, CreateExecutionJobBody, SessionRiskSnapshot,
+    FillRecord, CreateFillBody,
 )
 
 correlation_id_var: ContextVar[Optional[str]] = ContextVar("correlation_id", default=None)
@@ -180,7 +186,6 @@ def _default_portfolio_metrics() -> PortfolioMetrics:
 
 
 def _order_body_to_create_args(account_id: Union[int, str], body: CreateOrderBody, correlation_id: str) -> dict:
-    """Map API request body to TradingDB.create_order keyword arguments."""
     return {
         "account_id": account_id,
         "trade_id": str(body.trade_id),
@@ -244,6 +249,7 @@ async def startup_event():
         setup_risk_approval_table(db)
         setup_protective_order_columns(db)
         setup_execution_job_table(db)
+        setup_fill_table(db)
         logging.info("Database tables verification/creation complete.")
         schedule.every().day.at("00:00").do(run_ingestion_job)
         schedule.every().day.at("01:00").do(db.ensure_price_partitions)
@@ -469,16 +475,51 @@ async def get_trades_for_account(account_id: Union[int, str], api_key: str = Dep
     return wrap_response(data=trades or [])
 
 
+@app.post("/accounts/{account_id}/fills", response_model=StandardAgentResponse[FillRecord])
+async def create_fill_for_account(account_id: Union[int, str], body: CreateFillBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    logging.info(f"Request to create fill for account {account_id}, symbol {body.symbol}.")
+    try:
+        fill = create_fill_record(
+            db,
+            account_id=account_id,
+            order_id=body.order_id,
+            trade_id=body.trade_id,
+            symbol=body.symbol,
+            side=body.side.value if hasattr(body.side, "value") else str(body.side),
+            quantity=body.quantity,
+            fill_price=body.fill_price,
+            average_entry_price=body.average_entry_price,
+            fees=body.fees,
+            realized_pnl=body.realized_pnl,
+            broker_fill_id=body.broker_fill_id,
+            broker_order_id=body.broker_order_id,
+            liquidity=body.liquidity,
+            filled_at=body.filled_at,
+            correlation_id=correlation_id,
+            metadata=body.metadata,
+        )
+    except Exception as e:
+        logging.error(f"Fill creation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    return wrap_response(data=FillRecord(**fill))
+
+
+@app.get("/accounts/{account_id}/fills", response_model=StandardAgentResponse[List[FillRecord]])
+async def get_fills_for_account(account_id: Union[int, str], symbol: Optional[str] = None, limit: int = 100, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    logging.info(f"Request to get fills for account {account_id}, symbol={symbol}.")
+    try:
+        fills = get_fill_records(db, account_id, symbol=symbol, limit=limit)
+    except Exception as e:
+        logging.warning(f"Fill lookup failed for account {account_id}: {e}")
+        fills = []
+    return wrap_response(data=fills or [])
+
+
 @app.get("/accounts/{account_id}/risk/session", response_model=StandardAgentResponse[SessionRiskSnapshot])
 async def get_session_risk_snapshot_endpoint(account_id: Union[int, str], symbol: Optional[str] = None, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     logging.info(f"Request to get session risk snapshot for account {account_id}, symbol={symbol}.")
     try:
-        snapshot = build_session_risk_snapshot(
-            db,
-            account_id,
-            symbol=symbol,
-            emergency_halt=DATABASE_EMERGENCY_HALT,
-        )
+        snapshot = build_session_risk_snapshot(db, account_id, symbol=symbol, emergency_halt=DATABASE_EMERGENCY_HALT)
     except Exception as e:
         logging.error(f"Session risk snapshot failed for account {account_id}: {e}", exc_info=True)
         if TRADING_MODE == "LIVE":
