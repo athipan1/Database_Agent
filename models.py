@@ -85,22 +85,16 @@ class Order(CustomBaseModel):
     price: Optional[Decimal] = None
     quantity: int
     time_in_force: TimeInForce = TimeInForce.GTC
-
-    # --- Risk / protective execution metadata ---
     risk_approval_id: Optional[str] = None
     final_quantity: Optional[int] = None
     guard_plan: Optional[Dict[str, Any]] = None
     protective_exit: Optional[Dict[str, Any]] = None
-
-    # --- State Fields ---
     status: OrderStatus = OrderStatus.PENDING
     broker_order_id: Optional[str] = None
     reason: Optional[str] = None
     executed_quantity: int = 0
     avg_execution_price: Optional[Decimal] = None
     executed_at: Optional[datetime.datetime] = None
-
-    # Backward compatibility
     client_order_id: Optional[Union[UUID, str]] = None
     failure_reason: Optional[str] = None
     timestamp: Optional[datetime.datetime] = None
@@ -114,14 +108,10 @@ class CreateOrderBody(CustomBaseModel):
     price: Optional[Decimal] = None
     quantity: int
     time_in_force: TimeInForce = TimeInForce.GTC
-
-    # Risk / protective execution metadata from Manager/Risk Agent.
     risk_approval_id: Optional[str] = None
     final_quantity: Optional[int] = Field(default=None, gt=0)
     guard_plan: Optional[Dict[str, Any]] = None
     protective_exit: Optional[Dict[str, Any]] = None
-
-    # Backward compatibility
     client_order_id: Optional[Union[UUID, str]] = None
 
 class CreateOrderResponse(CustomBaseModel):
@@ -166,6 +156,43 @@ class ExecutionTrade(CustomBaseModel):
     notional: Decimal
     executed_at: datetime.datetime
     source_agent: Optional[str] = None
+
+class FillRecord(CustomBaseModel):
+    fill_id: int
+    account_id: Union[int, str]
+    order_id: Optional[int] = None
+    trade_id: Optional[Union[int, str]] = None
+    symbol: str
+    side: str
+    quantity: int
+    fill_price: Decimal
+    average_entry_price: Optional[Decimal] = None
+    gross_pnl: Decimal = Decimal("0")
+    fees: Decimal = Decimal("0")
+    realized_pnl: Decimal = Decimal("0")
+    broker_fill_id: Optional[str] = None
+    broker_order_id: Optional[str] = None
+    liquidity: Optional[str] = None
+    filled_at: datetime.datetime
+    correlation_id: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime.datetime] = None
+
+class CreateFillBody(CustomBaseModel):
+    order_id: Optional[int] = None
+    trade_id: Optional[Union[int, str]] = None
+    symbol: str
+    side: OrderSide
+    quantity: int = Field(gt=0)
+    fill_price: Decimal = Field(gt=0)
+    average_entry_price: Optional[Decimal] = Field(default=None, gt=0)
+    fees: Decimal = Decimal("0")
+    realized_pnl: Optional[Decimal] = None
+    broker_fill_id: Optional[str] = None
+    broker_order_id: Optional[str] = None
+    liquidity: Optional[str] = None
+    filled_at: Optional[datetime.datetime] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class RiskApproval(CustomBaseModel):
     approval_id: str
