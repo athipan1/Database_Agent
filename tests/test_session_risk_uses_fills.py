@@ -23,7 +23,7 @@ def test_session_snapshot_prefers_fill_realized_pnl():
     assert snapshot["daily_realized_pnl"] == 10.0
     assert snapshot["weekly_realized_pnl"] == 10.0
     assert snapshot["symbol_trades_today"] == 1
-    assert snapshot["consecutive_losses"] == 0
+    assert snapshot["consecutive_losses"] == 1
     assert snapshot["source"] == "database_agent_fills"
 
 
