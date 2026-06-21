@@ -46,13 +46,14 @@ from execution_job_repository import (
     setup_execution_job_table,
     update_execution_job,
 )
+from session_risk_repository import build_session_risk_snapshot
 from models import (
     AccountBalance, Position, Order, CreateOrderBody,
     OrderExecutionResponse, ExecutionTrade, Price, StandardAgentResponse,
     PortfolioMetrics, SignalHistory, CreateSignalHistoryBody,
     PerformanceMetric, CreatePerformanceMetricBody,
     RiskApproval, CreateRiskApprovalBody, MarkRiskApprovalUsedBody,
-    ExecutionJob, CreateExecutionJobBody,
+    ExecutionJob, CreateExecutionJobBody, SessionRiskSnapshot,
 )
 
 correlation_id_var: ContextVar[Optional[str]] = ContextVar("correlation_id", default=None)
@@ -69,6 +70,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 TRADING_MODE = os.getenv("TRADING_MODE", "PAPER").strip().upper()
 DATABASE_DEV_MODE = _env_bool("DATABASE_DEV_MODE", False)
+DATABASE_EMERGENCY_HALT = _env_bool("DATABASE_EMERGENCY_HALT", False)
 DEFAULT_DEV_ACCOUNT_ID = os.getenv("DEFAULT_DEV_ACCOUNT_ID", "1")
 DEFAULT_DEV_CASH_BALANCE = Decimal(os.getenv("DEFAULT_DEV_CASH_BALANCE", "100000"))
 
@@ -297,6 +299,7 @@ async def health_check():
         "database_connection": "connected" if is_connected else "dev_fallback" if DATABASE_DEV_MODE else "disconnected",
         "dev_mode": DATABASE_DEV_MODE,
         "trading_mode": TRADING_MODE,
+        "database_emergency_halt": DATABASE_EMERGENCY_HALT,
     })
 
 
@@ -464,6 +467,37 @@ async def get_trades_for_account(account_id: Union[int, str], api_key: str = Dep
         logging.warning(f"Trade history lookup failed for account {account_id}: {e}")
         trades = []
     return wrap_response(data=trades or [])
+
+
+@app.get("/accounts/{account_id}/risk/session", response_model=StandardAgentResponse[SessionRiskSnapshot])
+async def get_session_risk_snapshot_endpoint(account_id: Union[int, str], symbol: Optional[str] = None, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    logging.info(f"Request to get session risk snapshot for account {account_id}, symbol={symbol}.")
+    try:
+        snapshot = build_session_risk_snapshot(
+            db,
+            account_id,
+            symbol=symbol,
+            emergency_halt=DATABASE_EMERGENCY_HALT,
+        )
+    except Exception as e:
+        logging.error(f"Session risk snapshot failed for account {account_id}: {e}", exc_info=True)
+        if TRADING_MODE == "LIVE":
+            raise HTTPException(status_code=500, detail=str(e))
+        snapshot = {
+            "account_id": account_id,
+            "symbol": symbol.upper() if symbol else None,
+            "daily_realized_pnl": 0.0,
+            "weekly_realized_pnl": 0.0,
+            "consecutive_losses": 0,
+            "trades_today": 0,
+            "symbol_trades_today": 0,
+            "minutes_since_last_loss": None,
+            "minutes_since_last_symbol_trade": None,
+            "emergency_halt": DATABASE_EMERGENCY_HALT,
+            "source": "database_agent_fallback",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    return wrap_response(data=SessionRiskSnapshot(**snapshot))
 
 
 @app.get("/accounts/{account_id}/portfolio/metrics", response_model=StandardAgentResponse[PortfolioMetrics])
