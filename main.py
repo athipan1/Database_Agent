@@ -33,6 +33,11 @@ from risk_approval_repository import (
     mark_risk_approval_used,
     setup_risk_approval_table,
 )
+from protective_order_repository import (
+    normalize_order_protective_metadata,
+    persist_protective_order_metadata,
+    setup_protective_order_columns,
+)
 from models import (
     AccountBalance, Position, Order, CreateOrderBody,
     OrderExecutionResponse, ExecutionTrade, Price, StandardAgentResponse,
@@ -168,10 +173,6 @@ def _order_body_to_create_args(account_id: Union[int, str], body: CreateOrderBod
         "quantity": int(body.quantity),
         "price": body.price,
         "time_in_force": body.time_in_force.value if hasattr(body.time_in_force, "value") else str(body.time_in_force),
-        "risk_approval_id": body.risk_approval_id,
-        "final_quantity": body.final_quantity,
-        "guard_plan": body.guard_plan,
-        "protective_exit": body.protective_exit,
         "correlation_id": correlation_id,
     }
 
@@ -224,6 +225,7 @@ async def startup_event():
         db.setup_database()
         setup_history_tables(db)
         setup_risk_approval_table(db)
+        setup_protective_order_columns(db)
         logging.info("Database tables verification/creation complete.")
         schedule.every().day.at("00:00").do(run_ingestion_job)
         schedule.every().day.at("01:00").do(db.ensure_price_partitions)
@@ -341,15 +343,26 @@ async def get_orders_for_account(account_id: Union[int, str], api_key: str = Dep
     except Exception as e:
         logging.warning(f"Orders lookup failed for account {account_id}: {e}")
         orders = []
-    return wrap_response(data=orders or [])
+    return wrap_response(data=[normalize_order_protective_metadata(order) for order in (orders or [])])
 
 
 @app.post("/accounts/{account_id}/orders", response_model=StandardAgentResponse[Order])
 async def create_order_for_account(account_id: Union[int, str], body: CreateOrderBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     logging.info(f"Request to create order for account {account_id}, symbol {body.symbol}.")
     try:
+        setup_protective_order_columns(db)
         order_id = db.create_order(**_order_body_to_create_args(account_id, body, correlation_id))
+        if order_id is not None:
+            persist_protective_order_metadata(
+                db,
+                order_id,
+                risk_approval_id=body.risk_approval_id,
+                final_quantity=body.final_quantity,
+                guard_plan=body.guard_plan,
+                protective_exit=body.protective_exit,
+            )
         order = db.get_order_by_id(order_id) if order_id is not None else None
+        order = normalize_order_protective_metadata(order)
     except Exception as e:
         logging.error(f"Order creation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
