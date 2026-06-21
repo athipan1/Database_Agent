@@ -140,6 +140,12 @@ def _minutes_since(timestamp: Optional[datetime], now: datetime) -> Optional[flo
 
 
 def _safe_rows_from(db, method_name: str, *args, **kwargs) -> list[Any]:
+    if method_name == "get_fills":
+        try:
+            from fill_repository import get_fill_records
+            return get_fill_records(db, args[0], limit=kwargs.get("limit", 10000)) or []
+        except Exception:
+            return []
     try:
         method = getattr(db, method_name)
     except AttributeError:
@@ -150,19 +156,11 @@ def _safe_rows_from(db, method_name: str, *args, **kwargs) -> list[Any]:
         return []
 
 
-def build_session_risk_snapshot(
-    db,
-    account_id: Union[int, str],
-    *,
-    symbol: Optional[str] = None,
-    emergency_halt: bool = False,
-    now: Optional[datetime] = None
-) -> Dict[str, Any]:
+def build_session_risk_snapshot(db, account_id: Union[int, str], *, symbol: Optional[str] = None, emergency_halt: bool = False, now: Optional[datetime] = None) -> Dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = day_start - timedelta(days=day_start.weekday())
 
-    # Prefer explicit fill records because they are the most accurate realized-PnL source.
     fills = _safe_rows_from(db, "get_fills", account_id, limit=10000)
     trades = _safe_rows_from(db, "get_trade_history", account_id)
     orders = _safe_rows_from(db, "get_orders", account_id)
