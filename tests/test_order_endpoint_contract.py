@@ -23,6 +23,15 @@ def test_create_order_endpoint_maps_body_to_trading_db_contract():
         "quantity": 3,
         "price": "150.25",
         "time_in_force": "GTC",
+        "risk_approval_id": "risk-approval-1",
+        "final_quantity": 3,
+        "guard_plan": {
+            "symbol": "AAPL",
+            "side": "sell",
+            "quantity": 3,
+            "trigger_price": 140,
+            "time_in_force": "GTC",
+        },
     }
     persisted_order = {
         "order_id": 42,
@@ -36,9 +45,15 @@ def test_create_order_endpoint_maps_body_to_trading_db_contract():
         "time_in_force": "GTC",
         "status": "pending",
         "client_order_id": payload["trade_id"],
+        "risk_approval_id": "risk-approval-1",
+        "final_quantity": 3,
+        "guard_plan": payload["guard_plan"],
+        "protective_exit": None,
     }
 
     with patch.object(main, "DATABASE_AGENT_API_KEY", "test-key"), \
+            patch.object(main, "setup_protective_order_columns") as setup_columns, \
+            patch.object(main, "persist_protective_order_metadata") as persist_metadata, \
             patch.object(main.db, "create_order", return_value=42) as create_order, \
             patch.object(main.db, "get_order_by_id", return_value=persisted_order):
         response = client.post(
@@ -53,7 +68,11 @@ def test_create_order_endpoint_maps_body_to_trading_db_contract():
     assert body["data"]["order_id"] == 42
     assert body["data"]["trade_id"] == payload["trade_id"]
     assert body["data"]["status"] == "pending"
+    assert body["data"]["risk_approval_id"] == "risk-approval-1"
+    assert body["data"]["final_quantity"] == 3
+    assert body["data"]["guard_plan"] == payload["guard_plan"]
 
+    setup_columns.assert_called_once_with(main.db)
     create_order.assert_called_once_with(
         account_id="1",
         trade_id="trade-api-contract-1",
@@ -64,4 +83,12 @@ def test_create_order_endpoint_maps_body_to_trading_db_contract():
         price=Decimal("150.25"),
         time_in_force="GTC",
         correlation_id="corr-api-contract",
+    )
+    persist_metadata.assert_called_once_with(
+        main.db,
+        42,
+        risk_approval_id="risk-approval-1",
+        final_quantity=3,
+        guard_plan=payload["guard_plan"],
+        protective_exit=None,
     )
