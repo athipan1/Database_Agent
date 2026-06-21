@@ -80,6 +80,12 @@ class Order(CustomBaseModel):
     quantity: int
     time_in_force: TimeInForce = TimeInForce.GTC
 
+    # --- Risk / protective execution metadata ---
+    risk_approval_id: Optional[str] = None
+    final_quantity: Optional[int] = None
+    guard_plan: Optional[Dict[str, Any]] = None
+    protective_exit: Optional[Dict[str, Any]] = None
+
     # --- State Fields ---
     status: OrderStatus = OrderStatus.PENDING
     broker_order_id: Optional[str] = None
@@ -102,6 +108,12 @@ class CreateOrderBody(CustomBaseModel):
     price: Optional[Decimal] = None
     quantity: int
     time_in_force: TimeInForce = TimeInForce.GTC
+
+    # Risk / protective execution metadata from Manager/Risk Agent.
+    risk_approval_id: Optional[str] = None
+    final_quantity: Optional[int] = Field(default=None, gt=0)
+    guard_plan: Optional[Dict[str, Any]] = None
+    protective_exit: Optional[Dict[str, Any]] = None
 
     # Backward compatibility
     client_order_id: Optional[Union[UUID, str]] = None
