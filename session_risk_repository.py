@@ -53,7 +53,8 @@ def _symbol_of(row: Dict[str, Any]) -> str:
 
 def _timestamp_of(row: Dict[str, Any]) -> Optional[datetime]:
     return _as_datetime(
-        row.get("executed_at")
+        row.get("filled_at")
+        or row.get("executed_at")
         or row.get("closed_at")
         or row.get("timestamp")
         or row.get("updated_at")
@@ -79,8 +80,8 @@ def _realized_pnl(row: Dict[str, Any]) -> Decimal:
         notional = _as_decimal(row.get("notional"), entry_price * quantity)
         return notional * _as_decimal(return_pct)
 
-    entry_price = row.get("entry_price")
-    exit_price = row.get("exit_price") or row.get("avg_execution_price")
+    entry_price = row.get("entry_price") or row.get("average_entry_price")
+    exit_price = row.get("exit_price") or row.get("avg_execution_price") or row.get("fill_price")
     quantity = row.get("quantity") or row.get("executed_quantity")
     side = str(row.get("side") or "buy").lower()
     if entry_price is not None and exit_price is not None and quantity is not None:
@@ -88,9 +89,9 @@ def _realized_pnl(row: Dict[str, Any]) -> Decimal:
         exit_ = _as_decimal(exit_price)
         qty = _as_decimal(quantity)
         raw = (exit_ - entry) * qty
-        return -raw if side == "sell" else raw
+        fees = _as_decimal(row.get("fees"))
+        return (-raw if side == "buy" else raw) - fees if side in {"buy", "sell"} else raw - fees
 
-    # Do not invent PnL when the database row has no reliable cost/fill fields.
     return Decimal("0")
 
 
@@ -101,7 +102,7 @@ def _terminal_rows(rows: Iterable[Any]) -> list[Dict[str, Any]]:
         if not row:
             continue
         status = _status_of(row)
-        if status in TERMINAL_STATUSES or row.get("realized_pnl") is not None or row.get("return_pct") is not None:
+        if status in TERMINAL_STATUSES or row.get("realized_pnl") is not None or row.get("return_pct") is not None or row.get("filled_at") is not None:
             result.append(row)
     return result
 
@@ -138,29 +139,35 @@ def _minutes_since(timestamp: Optional[datetime], now: datetime) -> Optional[flo
     return max(0.0, (now - timestamp).total_seconds() / 60.0)
 
 
+def _safe_rows_from(db, method_name: str, *args, **kwargs) -> list[Any]:
+    try:
+        method = getattr(db, method_name)
+    except AttributeError:
+        return []
+    try:
+        return method(*args, **kwargs) or []
+    except Exception:
+        return []
+
+
 def build_session_risk_snapshot(
     db,
     account_id: Union[int, str],
     *,
     symbol: Optional[str] = None,
     emergency_halt: bool = False,
-    now: Optional[datetime] = None,
+    now: Optional[datetime] = None
 ) -> Dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = day_start - timedelta(days=day_start.weekday())
 
-    try:
-        trades = db.get_trade_history(account_id) or []
-    except Exception:
-        trades = []
+    # Prefer explicit fill records because they are the most accurate realized-PnL source.
+    fills = _safe_rows_from(db, "get_fills", account_id, limit=10000)
+    trades = _safe_rows_from(db, "get_trade_history", account_id)
+    orders = _safe_rows_from(db, "get_orders", account_id)
 
-    try:
-        orders = db.get_orders(account_id) or []
-    except Exception:
-        orders = []
-
-    history_rows = _terminal_rows(trades) or _terminal_rows(orders)
+    history_rows = _terminal_rows(fills) or _terminal_rows(trades) or _terminal_rows(orders)
     daily_rows = _rows_since(history_rows, day_start)
     weekly_rows = _rows_since(history_rows, week_start)
     symbol_rows = _rows_since(history_rows, day_start, symbol=symbol) if symbol else []
@@ -188,6 +195,6 @@ def build_session_risk_snapshot(
         "minutes_since_last_loss": _minutes_since(latest_loss_time, now),
         "minutes_since_last_symbol_trade": _minutes_since(latest_symbol_trade_time, now),
         "emergency_halt": bool(emergency_halt),
-        "source": "database_agent",
+        "source": "database_agent_fills" if fills else "database_agent",
         "generated_at": now.isoformat(),
     }
