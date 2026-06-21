@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Depends, Security, Request
 from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
-from typing import Optional, Any, List, Union
+from typing import Optional, Any, List, Union, Dict
 from decimal import Decimal
 from pythonjsonlogger import jsonlogger
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -33,12 +33,26 @@ from risk_approval_repository import (
     mark_risk_approval_used,
     setup_risk_approval_table,
 )
+from protective_order_repository import (
+    normalize_order_protective_metadata,
+    persist_protective_order_metadata,
+    setup_protective_order_columns,
+)
+from execution_job_repository import (
+    claim_next_execution_job,
+    create_execution_job,
+    get_execution_job,
+    get_execution_job_by_order_id,
+    setup_execution_job_table,
+    update_execution_job,
+)
 from models import (
     AccountBalance, Position, Order, CreateOrderBody,
     OrderExecutionResponse, ExecutionTrade, Price, StandardAgentResponse,
     PortfolioMetrics, SignalHistory, CreateSignalHistoryBody,
     PerformanceMetric, CreatePerformanceMetricBody,
     RiskApproval, CreateRiskApprovalBody, MarkRiskApprovalUsedBody,
+    ExecutionJob, CreateExecutionJobBody,
 )
 
 correlation_id_var: ContextVar[Optional[str]] = ContextVar("correlation_id", default=None)
@@ -109,6 +123,12 @@ def wrap_response(data: Any = None, status: str = "success", error: Optional[dic
         "error": error,
         "confidence_score": None,
     }
+
+
+def _normalize_order_or_404(order: Optional[Dict[str, Any]], message: str) -> Dict[str, Any]:
+    if not order:
+        raise HTTPException(status_code=404, detail=message)
+    return normalize_order_protective_metadata(order)
 
 
 DATABASE_AGENT_API_KEY = os.environ.get("DATABASE_AGENT_API_KEY")
@@ -220,6 +240,8 @@ async def startup_event():
         db.setup_database()
         setup_history_tables(db)
         setup_risk_approval_table(db)
+        setup_protective_order_columns(db)
+        setup_execution_job_table(db)
         logging.info("Database tables verification/creation complete.")
         schedule.every().day.at("00:00").do(run_ingestion_job)
         schedule.every().day.at("01:00").do(db.ensure_price_partitions)
@@ -303,6 +325,63 @@ async def mark_risk_approval_used_endpoint(approval_id: str, body: MarkRiskAppro
     return wrap_response(data=record)
 
 
+@app.get("/orders/trade/{trade_id}", response_model=StandardAgentResponse[Order])
+async def get_order_by_trade_id_endpoint(trade_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    order = _normalize_order_or_404(db.get_order_by_trade_id(trade_id), f"Order trade_id {trade_id} not found")
+    return wrap_response(data=Order(**order))
+
+
+@app.get("/orders/{order_id}", response_model=StandardAgentResponse[Order])
+async def get_order_by_id_endpoint(order_id: int, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    order = _normalize_order_or_404(db.get_order_by_id(order_id), f"Order {order_id} not found")
+    return wrap_response(data=Order(**order))
+
+
+@app.patch("/orders/{order_id}", response_model=StandardAgentResponse[Order])
+async def update_order_endpoint(order_id: int, updates: Dict[str, Any], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    order = db.update_order(order_id, updates)
+    order = _normalize_order_or_404(order, f"Order {order_id} not found")
+    return wrap_response(data=Order(**order))
+
+
+@app.post("/execution-jobs", response_model=StandardAgentResponse[ExecutionJob])
+async def create_execution_job_endpoint(body: CreateExecutionJobBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    job = create_execution_job(db, body.order_id, body.trade_id, body.max_attempts)
+    return wrap_response(data=ExecutionJob(**job))
+
+
+@app.get("/execution-jobs/{job_id}", response_model=StandardAgentResponse[ExecutionJob])
+async def get_execution_job_endpoint(job_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    job = get_execution_job(db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Execution job {job_id} not found")
+    return wrap_response(data=ExecutionJob(**job))
+
+
+@app.get("/orders/{order_id}/execution-job", response_model=StandardAgentResponse[ExecutionJob])
+async def get_execution_job_by_order_id_endpoint(order_id: int, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    job = get_execution_job_by_order_id(db, order_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Execution job for order {order_id} not found")
+    return wrap_response(data=ExecutionJob(**job))
+
+
+@app.post("/execution-jobs/claim-next", response_model=StandardAgentResponse[Optional[ExecutionJob]])
+async def claim_next_execution_job_endpoint(api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    job = claim_next_execution_job(db)
+    if not job:
+        raise HTTPException(status_code=404, detail="No queued execution jobs available")
+    return wrap_response(data=ExecutionJob(**job))
+
+
+@app.patch("/execution-jobs/{job_id}", response_model=StandardAgentResponse[ExecutionJob])
+async def update_execution_job_endpoint(job_id: Union[int, str], updates: Dict[str, Any], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    job = update_execution_job(db, job_id, updates)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Execution job {job_id} not found")
+    return wrap_response(data=ExecutionJob(**job))
+
+
 @app.get("/accounts/{account_id}/balance", response_model=StandardAgentResponse[AccountBalance])
 async def get_balance(account_id: Union[int, str], api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     logging.info(f"Request to get balance for account {account_id}.")
@@ -337,15 +416,26 @@ async def get_orders_for_account(account_id: Union[int, str], api_key: str = Dep
     except Exception as e:
         logging.warning(f"Orders lookup failed for account {account_id}: {e}")
         orders = []
-    return wrap_response(data=orders or [])
+    return wrap_response(data=[normalize_order_protective_metadata(order) for order in (orders or [])])
 
 
 @app.post("/accounts/{account_id}/orders", response_model=StandardAgentResponse[Order])
 async def create_order_for_account(account_id: Union[int, str], body: CreateOrderBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
     logging.info(f"Request to create order for account {account_id}, symbol {body.symbol}.")
     try:
+        setup_protective_order_columns(db)
         order_id = db.create_order(**_order_body_to_create_args(account_id, body, correlation_id))
+        if order_id is not None:
+            persist_protective_order_metadata(
+                db,
+                order_id,
+                risk_approval_id=body.risk_approval_id,
+                final_quantity=body.final_quantity,
+                guard_plan=body.guard_plan,
+                protective_exit=body.protective_exit,
+            )
         order = db.get_order_by_id(order_id) if order_id is not None else None
+        order = normalize_order_protective_metadata(order)
     except Exception as e:
         logging.error(f"Order creation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
