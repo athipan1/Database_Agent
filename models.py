@@ -26,6 +26,12 @@ class OrderStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
+class ExecutionJobStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
 class RiskApprovalStatus(str, Enum):
     APPROVED = "approved"
     USED = "used"
@@ -132,6 +138,22 @@ class OrderExecutionResponse(CustomBaseModel):
     account_id: Union[int, str]
     status: OrderStatus
     reason: Optional[str] = None
+
+class ExecutionJob(CustomBaseModel):
+    job_id: Union[int, str]
+    order_id: int
+    trade_id: Union[int, str]
+    status: ExecutionJobStatus = ExecutionJobStatus.QUEUED
+    attempts: int = 0
+    max_attempts: int = 3
+    last_error: Optional[str] = None
+    created_at: Optional[datetime.datetime] = None
+    updated_at: Optional[datetime.datetime] = None
+
+class CreateExecutionJobBody(CustomBaseModel):
+    order_id: int
+    trade_id: Union[int, str]
+    max_attempts: int = Field(default=3, gt=0)
 
 class ExecutionTrade(CustomBaseModel):
     trade_id: Union[int, str]
