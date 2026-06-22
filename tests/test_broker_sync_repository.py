@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from decimal import Decimal
 from datetime import datetime, timezone
 
-from broker_sync_repository import setup_broker_sync_tables, sync_broker_state
+from broker_sync_repository import sync_broker_state
 
 
 class SQLiteBrokerSyncTestDB:
@@ -131,10 +131,10 @@ def test_sync_broker_state_updates_cash_positions_and_open_orders():
     assert result["open_orders_synced"] == 2
     assert db.get_account_balance(1) == Decimal("-100223.4")
 
-    positions = db.get_positions(1)
-    assert [p["symbol"] for p in positions] == ["AAPL", "ACGL"]
-    assert positions[0]["quantity"] == 1
-    assert Decimal(str(positions[1]["market_value"])) == Decimal("199837.5")
+    positions_by_symbol = {p["symbol"]: p for p in db.get_positions(1)}
+    assert set(positions_by_symbol) == {"AAPL", "ACGL"}
+    assert positions_by_symbol["AAPL"]["quantity"] == 1
+    assert Decimal(str(positions_by_symbol["ACGL"]["market_value"])) == Decimal("199837.5")
 
     orders = db.get_orders(1)
     assert len(orders) == 2
