@@ -52,6 +52,7 @@ from fill_repository import (
     setup_fill_table,
 )
 from session_risk_repository import build_session_risk_snapshot
+from broker_sync_repository import setup_broker_sync_tables, sync_broker_state
 from models import (
     AccountBalance, Position, Order, CreateOrderBody,
     OrderExecutionResponse, ExecutionTrade, Price, StandardAgentResponse,
@@ -59,7 +60,7 @@ from models import (
     PerformanceMetric, CreatePerformanceMetricBody,
     RiskApproval, CreateRiskApprovalBody, MarkRiskApprovalUsedBody,
     ExecutionJob, CreateExecutionJobBody, SessionRiskSnapshot,
-    FillRecord, CreateFillBody,
+    FillRecord, CreateFillBody, BrokerSyncBody, BrokerSyncResult,
 )
 
 correlation_id_var: ContextVar[Optional[str]] = ContextVar("correlation_id", default=None)
@@ -125,7 +126,7 @@ def wrap_response(data: Any = None, status: str = "success", error: Optional[dic
     return {
         "status": status,
         "agent_type": "database",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "timestamp": datetime.now(timezone.utc),
         "data": data,
         "error": error,
@@ -250,6 +251,7 @@ async def startup_event():
         setup_protective_order_columns(db)
         setup_execution_job_table(db)
         setup_fill_table(db)
+        setup_broker_sync_tables(db)
         logging.info("Database tables verification/creation complete.")
         schedule.every().day.at("00:00").do(run_ingestion_job)
         schedule.every().day.at("01:00").do(db.ensure_price_partitions)
@@ -307,6 +309,17 @@ async def health_check():
         "trading_mode": TRADING_MODE,
         "database_emergency_halt": DATABASE_EMERGENCY_HALT,
     })
+
+
+@app.post("/broker-sync", response_model=StandardAgentResponse[BrokerSyncResult])
+async def broker_sync_endpoint(body: BrokerSyncBody, api_key: str = Depends(get_api_key), correlation_id: str = Depends(get_correlation_id)):
+    logging.info(f"Broker sync request for account {body.account_id} from {body.broker}.")
+    try:
+        result = sync_broker_state(db, body.model_dump(mode="json"))
+    except Exception as e:
+        logging.error(f"Broker sync failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    return wrap_response(data=BrokerSyncResult(**result))
 
 
 @app.post("/risk-approvals", response_model=StandardAgentResponse[RiskApproval])

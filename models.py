@@ -68,6 +68,28 @@ class Position(CustomBaseModel):
     symbol: str
     quantity: int
     average_cost: Decimal
+    current_market_price: Optional[Decimal] = None
+    market_value: Optional[Decimal] = None
+
+class BrokerSyncBody(CustomBaseModel):
+    source: str = "execution_agent"
+    account_id: Union[int, str] = 1
+    broker: Optional[str] = None
+    paper: Optional[bool] = None
+    captured_at: Optional[datetime.datetime] = None
+    account: Dict[str, Any] = Field(default_factory=dict)
+    positions: List[Dict[str, Any]] = Field(default_factory=list)
+    open_orders: List[Dict[str, Any]] = Field(default_factory=list)
+    summary: Dict[str, Any] = Field(default_factory=dict)
+    order_classification: Dict[str, Any] = Field(default_factory=dict)
+
+class BrokerSyncResult(CustomBaseModel):
+    account_id: Union[int, str]
+    cash_balance: Decimal
+    positions_synced: int
+    open_orders_synced: int
+    missing_open_orders_marked_cancelled: int = 0
+    synced_at: datetime.datetime
 
 class PortfolioMetrics(CustomBaseModel):
     win_rate: float = 0.0
@@ -91,6 +113,7 @@ class Order(CustomBaseModel):
     protective_exit: Optional[Dict[str, Any]] = None
     status: OrderStatus = OrderStatus.PENDING
     broker_order_id: Optional[str] = None
+    broker_status: Optional[str] = None
     reason: Optional[str] = None
     executed_quantity: int = 0
     avg_execution_price: Optional[Decimal] = None
@@ -98,6 +121,7 @@ class Order(CustomBaseModel):
     client_order_id: Optional[Union[UUID, str]] = None
     failure_reason: Optional[str] = None
     timestamp: Optional[datetime.datetime] = None
+    broker_synced_at: Optional[datetime.datetime] = None
 
 class CreateOrderBody(CustomBaseModel):
     trade_id: Union[int, str] = Field(..., description="Globally unique trade ID")
