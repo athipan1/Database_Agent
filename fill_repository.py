@@ -134,6 +134,16 @@ def _format_fill_row(db, row) -> Dict[str, Any]:
     return data
 
 
+def _apply_stock_accounting_safely(db, fill_id: Union[int, str]) -> Dict[str, Any]:
+    try:
+        from stock_accounting_repository import apply_stock_fill_to_lots
+        return apply_stock_fill_to_lots(db, fill_id)
+    except Exception as exc:
+        # Fill persistence is the source of truth. Accounting failures should be visible
+        # without silently dropping the broker fill. LIVE callers can alert on metadata.
+        return {"accounting_action": "failed", "fill_id": int(fill_id), "error": str(exc)}
+
+
 def create_fill_record(
     db,
     *,
@@ -203,7 +213,11 @@ def create_fill_record(
             raise
         finally:
             cursor.close()
-    return get_fill_record(db, fill_id)
+    fill = get_fill_record(db, fill_id)
+    accounting = _apply_stock_accounting_safely(db, fill_id)
+    if fill is not None:
+        fill["stock_accounting"] = accounting
+    return fill
 
 
 def get_fill_record(db, fill_id: Union[int, str]) -> Optional[Dict[str, Any]]:
