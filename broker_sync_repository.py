@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List
@@ -51,6 +52,47 @@ def _status(value: Any) -> str:
     }.get(raw, "placed" if raw else "pending")
 
 
+def _main_module():
+    return sys.modules.get("main") or sys.modules.get("__main__")
+
+
+def _register_status_route(db) -> None:
+    main_module = _main_module()
+    app = getattr(main_module, "app", None)
+    if app is None:
+        return
+    if getattr(app.state, "broker_sync_status_route_registered", False):
+        return
+
+    from broker_sync_status_repository import broker_sync_status
+
+    wrap_response = getattr(main_module, "wrap_response", None)
+    if wrap_response is None:
+        def wrap_response(data=None, status="success", error=None):
+            return {"status": status, "agent_type": "database", "data": data, "error": error}
+
+    dependencies = []
+    get_api_key = getattr(main_module, "get_api_key", None)
+    if get_api_key is not None:
+        try:
+            from fastapi import Depends
+            dependencies = [Depends(get_api_key)]
+        except Exception:
+            dependencies = []
+
+    async def broker_sync_status_endpoint(account_id: int = 1):
+        return wrap_response(data=broker_sync_status(db, account_id=account_id))
+
+    app.add_api_route(
+        "/broker-sync/status",
+        broker_sync_status_endpoint,
+        methods=["GET"],
+        dependencies=dependencies,
+        name="broker_sync_status_endpoint",
+    )
+    app.state.broker_sync_status_route_registered = True
+
+
 def setup_broker_sync_tables(db) -> None:
     timestamp_type = "TEXT" if db.db_type == "sqlite" else "TIMESTAMPTZ"
     json_type = "TEXT" if db.db_type == "sqlite" else "JSONB"
@@ -83,6 +125,7 @@ def setup_broker_sync_tables(db) -> None:
             raise
         finally:
             cursor.close()
+    _register_status_route(db)
 
 
 def _payload(value: Any, db) -> Any:
