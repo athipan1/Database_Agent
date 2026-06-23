@@ -275,14 +275,49 @@ class CreateSignalHistoryBody(CustomBaseModel):
 class PerformanceMetric(CustomBaseModel):
     metric_id: str
     account_id: Union[int, str]
+    symbol: str
     timestamp: datetime.datetime
-    metric_type: str
-    value: Decimal
+    source_agent: str = "learning-agent"
+    entry_price: Optional[Decimal] = None
+    exit_price: Optional[Decimal] = None
+    current_price: Optional[Decimal] = None
+    return_pct: Optional[float] = None
+    holding_days: Optional[int] = None
+    outcome: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class CreatePerformanceMetricBody(CustomBaseModel):
     metric_id: Optional[str] = None
     account_id: Union[int, str]
-    metric_type: str
-    value: Decimal
+    symbol: str
+    source_agent: str = "learning-agent"
+    entry_price: Optional[Decimal] = None
+    exit_price: Optional[Decimal] = None
+    current_price: Optional[Decimal] = None
+    return_pct: Optional[float] = None
+    holding_days: Optional[int] = None
+    outcome: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class SessionRiskSnapshot(CustomBaseModel):
+    account_id: Union[int, str]
+    symbol: Optional[str] = None
+    daily_realized_pnl: float = 0.0
+    weekly_realized_pnl: float = 0.0
+    consecutive_losses: int = 0
+    trades_today: int = 0
+    symbol_trades_today: int = 0
+    minutes_since_last_loss: Optional[float] = None
+    minutes_since_last_symbol_trade: Optional[float] = None
+    emergency_halt: bool = False
+    source: str = "database_agent"
+    generated_at: Optional[datetime.datetime] = None
+
+class Price(CustomBaseModel):
+    symbol: str
+    timestamp: datetime.datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: int
