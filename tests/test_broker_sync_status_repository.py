@@ -43,6 +43,7 @@ class SQLiteStatusTestDB:
                 symbol TEXT NOT NULL,
                 quantity BIGINT NOT NULL,
                 average_cost TEXT NOT NULL,
+                strategy_bucket TEXT DEFAULT 'unassigned',
                 UNIQUE (account_id, symbol)
             )
         """)
@@ -59,6 +60,8 @@ class SQLiteStatusTestDB:
                 time_in_force TEXT DEFAULT 'GTC',
                 status TEXT NOT NULL,
                 broker_order_id TEXT,
+                broker_status TEXT,
+                strategy_bucket TEXT DEFAULT 'unassigned',
                 reason TEXT,
                 executed_quantity BIGINT DEFAULT 0,
                 avg_execution_price TEXT,
