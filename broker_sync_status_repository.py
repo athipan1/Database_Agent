@@ -5,6 +5,14 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 
+BUCKET_TARGETS = {
+    "core_dividend": Decimal("0.50"),
+    "value_rebound": Decimal("0.30"),
+    "news_momentum": Decimal("0.20"),
+    "unassigned": Decimal("0.00"),
+}
+
+
 def _param(db) -> str:
     return db.param_style
 
@@ -22,6 +30,15 @@ def _json_load(value: Any, default: Any) -> Any:
         return value
     try:
         return json.loads(value)
+    except Exception:
+        return default
+
+
+def _decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
+    try:
+        if value is None or value == "":
+            return default
+        return Decimal(str(value))
     except Exception:
         return default
 
@@ -111,6 +128,49 @@ def _symbol_qty_map(positions: List[Dict[str, Any]], *, symbol_key: str = "symbo
     return result
 
 
+def _strategy_bucket(item: Dict[str, Any]) -> str:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    bucket = str(item.get("strategy_bucket") or item.get("bucket") or metadata.get("strategy_bucket") or "unassigned").strip().lower()
+    return bucket if bucket in BUCKET_TARGETS else "unassigned"
+
+
+def _position_value(item: Dict[str, Any]) -> Decimal:
+    market_value = _decimal(item.get("market_value") or item.get("value"))
+    if market_value:
+        return abs(market_value)
+    qty = _decimal(item.get("quantity") or item.get("qty"))
+    price = _decimal(item.get("current_market_price") or item.get("current_price") or item.get("average_cost") or item.get("avg_entry_price"))
+    return abs(qty * price)
+
+
+def _bucket_exposure(positions: List[Dict[str, Any]], account: Dict[str, Any]) -> Dict[str, Any]:
+    equity = _decimal(account.get("equity") or account.get("portfolio_value") or account.get("cash_balance") or account.get("cash"))
+    buckets: Dict[str, Dict[str, Any]] = {
+        name: {
+            "target_weight": str(target),
+            "target_value": str((equity * target).quantize(Decimal("0.01"))) if equity else "0.00",
+            "exposure": Decimal("0"),
+            "symbols": [],
+        }
+        for name, target in BUCKET_TARGETS.items()
+    }
+    for item in positions or []:
+        bucket = _strategy_bucket(item)
+        exposure = _position_value(item)
+        symbol = str(item.get("symbol") or "").upper()
+        buckets[bucket]["exposure"] += exposure
+        if symbol:
+            buckets[bucket]["symbols"].append({"symbol": symbol, "exposure": exposure})
+    for bucket, data in buckets.items():
+        exposure = data["exposure"]
+        data["exposure"] = str(exposure.quantize(Decimal("0.01")))
+        data["current_weight"] = str((exposure / equity).quantize(Decimal("0.0001"))) if equity else "0"
+        target = BUCKET_TARGETS[bucket]
+        data["remaining_to_target"] = str(((equity * target) - exposure).quantize(Decimal("0.01"))) if equity else "0.00"
+        data["symbols"] = [{"symbol": row["symbol"], "exposure": str(row["exposure"].quantize(Decimal("0.01")))} for row in data["symbols"]]
+    return {"equity_basis": str(equity), "buckets": buckets}
+
+
 def _mismatch_report(db_account: Dict[str, Any], db_positions: List[Dict[str, Any]], db_orders: List[Dict[str, Any]], snapshot: Dict[str, Any]) -> Dict[str, Any]:
     broker_account = snapshot.get("account") or {}
     broker_positions = snapshot.get("positions") or []
@@ -143,6 +203,9 @@ def broker_sync_status(db, account_id: int = 1) -> Dict[str, Any]:
             positions = _positions(cursor, db, account_id)
             open_orders = _orders(cursor, db, account_id)
             mismatch = _mismatch_report(account, positions, open_orders, snapshot)
+            account_for_exposure = dict(account or {})
+            if snapshot.get("account"):
+                account_for_exposure.update(snapshot.get("account") or {})
             return _jsonable({
                 "account_id": account_id,
                 "has_snapshot": bool(snapshot),
@@ -154,6 +217,7 @@ def broker_sync_status(db, account_id: int = 1) -> Dict[str, Any]:
                     "position_count": len(positions),
                     "open_order_count": len(open_orders),
                 },
+                "bucket_exposure": _bucket_exposure(positions, account_for_exposure),
                 "mismatch": mismatch,
             })
         finally:

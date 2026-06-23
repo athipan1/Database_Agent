@@ -12,6 +12,9 @@ except Exception:  # pragma: no cover
     PgJson = None
 
 
+VALID_STRATEGY_BUCKETS = {"core_dividend", "value_rebound", "news_momentum", "unassigned"}
+
+
 def _param(db) -> str:
     return db.param_style
 
@@ -34,6 +37,21 @@ def _qty(value: Any) -> int:
         return int(Decimal(str(value or 0)))
     except Exception:
         return 0
+
+
+def _strategy_bucket(item: Dict[str, Any]) -> str:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    raw = (
+        item.get("strategy_bucket")
+        or item.get("bucket")
+        or item.get("allocation_bucket")
+        or metadata.get("strategy_bucket")
+        or metadata.get("bucket")
+        or metadata.get("allocation_bucket")
+        or "unassigned"
+    )
+    bucket = str(raw or "unassigned").strip().lower()
+    return bucket if bucket in VALID_STRATEGY_BUCKETS else "unassigned"
 
 
 def _status(value: Any) -> str:
@@ -116,8 +134,10 @@ def setup_broker_sync_tables(db) -> None:
             """)
             db._add_column_if_not_exists(cursor, "orders", "broker_synced_at", timestamp_type)
             db._add_column_if_not_exists(cursor, "orders", "broker_status", "TEXT")
+            db._add_column_if_not_exists(cursor, "orders", "strategy_bucket", "TEXT DEFAULT 'unassigned'")
             db._add_column_if_not_exists(cursor, "positions", "current_market_price", "TEXT" if db.db_type == "sqlite" else "NUMERIC(18, 5)")
             db._add_column_if_not_exists(cursor, "positions", "market_value", "TEXT" if db.db_type == "sqlite" else "NUMERIC(18, 5)")
+            db._add_column_if_not_exists(cursor, "positions", "strategy_bucket", "TEXT DEFAULT 'unassigned'")
             db._add_column_if_not_exists(cursor, "positions", "broker_synced_at", timestamp_type)
             conn.commit()
         except Exception:
@@ -165,12 +185,13 @@ def _replace_positions(cursor, db, account_id: int, positions: List[Dict[str, An
         average_cost = _decimal(item.get("avg_entry_price") or item.get("average_cost"))
         current_price = _decimal(item.get("current_price"), average_cost)
         market_value = _decimal(item.get("market_value"), Decimal(quantity) * current_price)
+        strategy_bucket = _strategy_bucket(item)
         cursor.execute(
             f"""
-            INSERT INTO positions (account_id, symbol, quantity, average_cost, current_market_price, market_value, broker_synced_at)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p})
+            INSERT INTO positions (account_id, symbol, quantity, average_cost, current_market_price, market_value, strategy_bucket, broker_synced_at)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
             """,
-            (account_id, symbol, quantity, str(average_cost), str(current_price), str(market_value), synced_at),
+            (account_id, symbol, quantity, str(average_cost), str(current_price), str(market_value), strategy_bucket, synced_at),
         )
         count += 1
     return count
@@ -194,25 +215,26 @@ def _sync_open_orders(cursor, db, account_id: int, rows: List[Dict[str, Any]]) -
         raw_state = str(item.get("status") or "")
         filled = _qty(item.get("filled_qty") or item.get("executed_quantity"))
         submitted_at = item.get("submitted_at") or synced_at
+        strategy_bucket = _strategy_bucket(item)
         cursor.execute(f"SELECT order_id FROM orders WHERE broker_order_id = {p}", (str(broker_id),))
         if cursor.fetchone():
             cursor.execute(
                 f"""
                 UPDATE orders
                 SET symbol = {p}, side = {p}, order_type = {p}, quantity = {p}, price = {p}, time_in_force = {p},
-                    status = {p}, broker_status = {p}, executed_quantity = {p}, broker_synced_at = {p}
+                    status = {p}, broker_status = {p}, executed_quantity = {p}, strategy_bucket = {p}, broker_synced_at = {p}
                 WHERE broker_order_id = {p}
                 """,
-                (symbol, side, kind, quantity, str(price) if price is not None else None, tif, state, raw_state, filled, synced_at, str(broker_id)),
+                (symbol, side, kind, quantity, str(price) if price is not None else None, tif, state, raw_state, filled, strategy_bucket, synced_at, str(broker_id)),
             )
         else:
             trade_id = f"broker:{broker_id}"
             cursor.execute(
                 f"""
-                INSERT INTO orders (account_id, trade_id, symbol, side, order_type, quantity, price, time_in_force, status, broker_order_id, broker_status, executed_quantity, timestamp, broker_synced_at)
-                VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+                INSERT INTO orders (account_id, trade_id, symbol, side, order_type, quantity, price, time_in_force, status, broker_order_id, broker_status, executed_quantity, strategy_bucket, timestamp, broker_synced_at)
+                VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
                 """,
-                (account_id, trade_id, symbol, side, kind, quantity, str(price) if price is not None else None, tif, state, str(broker_id), raw_state, filled, submitted_at, synced_at),
+                (account_id, trade_id, symbol, side, kind, quantity, str(price) if price is not None else None, tif, state, str(broker_id), raw_state, filled, strategy_bucket, submitted_at, synced_at),
             )
         count += 1
     return count

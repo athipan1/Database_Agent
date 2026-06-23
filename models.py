@@ -38,6 +38,8 @@ class RiskApprovalStatus(str, Enum):
     REVOKED = "revoked"
     EXPIRED = "expired"
 
+StrategyBucket = Literal["core_dividend", "value_rebound", "news_momentum", "unassigned"]
+
 class CustomBaseModel(BaseModel):
     model_config = ConfigDict(
         json_encoders = {
@@ -70,6 +72,7 @@ class Position(CustomBaseModel):
     average_cost: Decimal
     current_market_price: Optional[Decimal] = None
     market_value: Optional[Decimal] = None
+    strategy_bucket: StrategyBucket = "unassigned"
 
 class BrokerSyncBody(CustomBaseModel):
     source: str = "execution_agent"
@@ -107,6 +110,7 @@ class Order(CustomBaseModel):
     price: Optional[Decimal] = None
     quantity: int
     time_in_force: TimeInForce = TimeInForce.GTC
+    strategy_bucket: StrategyBucket = "unassigned"
     risk_approval_id: Optional[str] = None
     final_quantity: Optional[int] = None
     guard_plan: Optional[Dict[str, Any]] = None
