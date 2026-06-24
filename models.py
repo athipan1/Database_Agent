@@ -94,6 +94,33 @@ class BrokerSyncResult(CustomBaseModel):
     missing_open_orders_marked_cancelled: int = 0
     synced_at: datetime.datetime
 
+class PortfolioAudit(CustomBaseModel):
+    portfolio_audit_id: str
+    account_id: Union[int, str]
+    correlation_id: Optional[str] = None
+    policy_name: Optional[str] = None
+    mode: str = "portfolio_allocation"
+    status: str = "created"
+    allocation_plan: Dict[str, Any] = Field(default_factory=dict)
+    portfolio_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    selected_positions: List[Dict[str, Any]] = Field(default_factory=list)
+    risk_approvals: List[Dict[str, Any]] = Field(default_factory=list)
+    execution_orders: List[Dict[str, Any]] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime.datetime] = None
+
+class CreatePortfolioAuditBody(CustomBaseModel):
+    portfolio_audit_id: Optional[str] = None
+    account_id: Union[int, str]
+    correlation_id: Optional[str] = None
+    allocation_plan: Dict[str, Any] = Field(default_factory=dict)
+    portfolio_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    selected_positions: List[Dict[str, Any]] = Field(default_factory=list)
+    risk_approvals: List[Dict[str, Any]] = Field(default_factory=list)
+    execution_orders: List[Dict[str, Any]] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    status: str = "created"
+
 class PortfolioMetrics(CustomBaseModel):
     win_rate: float = 0.0
     average_return: float = 0.0
