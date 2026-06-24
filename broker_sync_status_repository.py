@@ -43,6 +43,14 @@ def _decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
         return default
 
 
+def _money(value: Any) -> Decimal:
+    return _decimal(value).quantize(Decimal("0.01"))
+
+
+def _qty(value: Any) -> Decimal:
+    return _decimal(value).quantize(Decimal("0.000001"))
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Decimal):
         return str(value)
@@ -124,8 +132,20 @@ def _symbol_qty_map(positions: List[Dict[str, Any]], *, symbol_key: str = "symbo
             if item.get(key) is not None:
                 qty = item.get(key)
                 break
-        result[symbol] = str(qty if qty is not None else "0")
+        result[symbol] = str(_qty(qty))
     return result
+
+
+def _broker_order_key(order: Dict[str, Any]) -> str:
+    return str(order.get("id") or order.get("broker_order_id") or "").strip()
+
+
+def _db_order_key(order: Dict[str, Any]) -> str:
+    return str(order.get("broker_order_id") or "").strip()
+
+
+def _open_order_id_set(rows: List[Dict[str, Any]], key_fn) -> set[str]:
+    return {key for key in (key_fn(row) for row in rows or []) if key}
 
 
 def _strategy_bucket(item: Dict[str, Any]) -> str:
@@ -177,16 +197,18 @@ def _mismatch_report(db_account: Dict[str, Any], db_positions: List[Dict[str, An
     broker_orders = snapshot.get("open_orders") or []
     db_position_map = _symbol_qty_map(db_positions, qty_keys=("quantity", "qty"))
     broker_position_map = _symbol_qty_map(broker_positions, qty_keys=("qty", "quantity"))
+    db_order_ids = _open_order_id_set(db_orders, _db_order_key)
+    broker_order_ids = _open_order_id_set(broker_orders, _broker_order_key)
     mismatches: List[Dict[str, Any]] = []
     if broker_account:
-        db_cash = str(db_account.get("cash_balance") or "")
-        broker_cash = str(broker_account.get("cash") or "")
-        if db_cash and broker_cash and db_cash != broker_cash:
-            mismatches.append({"field": "cash_balance", "database": db_cash, "broker": broker_cash})
+        db_cash = _money(db_account.get("cash_balance"))
+        broker_cash = _money(broker_account.get("cash"))
+        if db_cash != broker_cash:
+            mismatches.append({"field": "cash_balance", "database": str(db_cash), "broker": str(broker_cash)})
     if db_position_map != broker_position_map:
         mismatches.append({"field": "positions", "database": db_position_map, "broker": broker_position_map})
-    if len(db_orders) != len(broker_orders):
-        mismatches.append({"field": "open_orders_count", "database": len(db_orders), "broker": len(broker_orders)})
+    if db_order_ids != broker_order_ids:
+        mismatches.append({"field": "open_order_ids", "database": sorted(db_order_ids), "broker": sorted(broker_order_ids)})
     return {
         "is_synced": len(mismatches) == 0 and bool(snapshot),
         "mismatch_count": len(mismatches),

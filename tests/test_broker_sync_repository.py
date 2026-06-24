@@ -4,6 +4,7 @@ from decimal import Decimal
 from datetime import datetime, timezone
 
 from broker_sync_repository import sync_broker_state
+from broker_sync_status_repository import broker_sync_status
 
 
 class SQLiteBrokerSyncTestDB:
@@ -104,20 +105,18 @@ def broker_state(open_orders=None):
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "account": {
             "broker": "ALPACA",
-            "cash": "-100223.4",
-            "buying_power": "0",
-            "equity": "99909.6",
-            "portfolio_value": "99909.6",
+            "cash": "93276.78",
+            "buying_power": "402033.47",
+            "equity": "103607.62",
+            "portfolio_value": "103607.62",
         },
         "positions": [
-            {"symbol": "AAPL", "qty": "1", "avg_entry_price": "254.48", "current_price": "295.5", "market_value": "295.5"},
-            {"symbol": "ACGL", "qty": "2190", "avg_entry_price": "91.31", "current_price": "91.25", "market_value": "199837.5"},
+            {"symbol": "ADBE", "qty": "52", "avg_entry_price": "198.76", "current_price": "198.67", "market_value": "10330.84"},
         ],
         "open_orders": open_orders if open_orders is not None else [
-            {"id": "order-aapl", "symbol": "AAPL", "side": "sell", "qty": "1", "filled_qty": "0", "type": "market", "time_in_force": "day", "status": "new", "submitted_at": "2026-06-22T08:01:16Z"},
-            {"id": "order-acgl", "symbol": "ACGL", "side": "sell", "qty": "2190", "filled_qty": "0", "type": "market", "time_in_force": "day", "status": "new", "submitted_at": "2026-06-22T08:01:16Z"},
+            {"id": "stop-adbe", "symbol": "ADBE", "side": "sell", "qty": "52", "filled_qty": "0", "type": "stop", "time_in_force": "gtc", "status": "new", "submitted_at": "2026-06-24T16:01:39Z", "stop_price": "190.12"},
         ],
-        "summary": {"position_count": 2, "open_order_count": 2, "buying_power_unavailable": True, "cash_negative": True},
+        "summary": {"position_count": 1, "open_order_count": 1, "buying_power_unavailable": False, "cash_negative": False},
     }
 
 
@@ -126,19 +125,19 @@ def test_sync_broker_state_updates_cash_positions_and_open_orders():
 
     result = sync_broker_state(db, broker_state())
 
-    assert result["cash_balance"] == Decimal("-100223.4")
-    assert result["positions_synced"] == 2
-    assert result["open_orders_synced"] == 2
-    assert db.get_account_balance(1) == Decimal("-100223.4")
+    assert result["cash_balance"] == Decimal("93276.78")
+    assert result["positions_synced"] == 1
+    assert result["open_orders_synced"] == 1
+    assert db.get_account_balance(1) == Decimal("93276.78")
 
     positions_by_symbol = {p["symbol"]: p for p in db.get_positions(1)}
-    assert set(positions_by_symbol) == {"AAPL", "ACGL"}
-    assert positions_by_symbol["AAPL"]["quantity"] == 1
-    assert Decimal(str(positions_by_symbol["ACGL"]["market_value"])) == Decimal("199837.5")
+    assert set(positions_by_symbol) == {"ADBE"}
+    assert positions_by_symbol["ADBE"]["quantity"] == 52
+    assert Decimal(str(positions_by_symbol["ADBE"]["market_value"])) == Decimal("10330.84")
 
     orders = db.get_orders(1)
-    assert len(orders) == 2
-    assert {order["broker_order_id"] for order in orders} == {"order-aapl", "order-acgl"}
+    assert len(orders) == 1
+    assert {order["broker_order_id"] for order in orders} == {"stop-adbe"}
     assert {order["status"] for order in orders} == {"placed"}
 
 
@@ -149,7 +148,7 @@ def test_sync_broker_state_marks_missing_broker_orders_cancelled():
     result = sync_broker_state(db, broker_state(open_orders=[]))
 
     assert result["open_orders_synced"] == 0
-    assert result["missing_open_orders_marked_cancelled"] == 2
+    assert result["missing_open_orders_marked_cancelled"] == 1
     orders = db.get_orders(1)
     assert {order["status"] for order in orders} == {"cancelled"}
     assert {order["reason"] for order in orders} == {"missing_from_broker_sync"}
@@ -163,3 +162,19 @@ def test_sync_broker_state_records_snapshot():
     cur = db.conn.cursor()
     cur.execute("SELECT COUNT(*) AS count FROM broker_sync_snapshots")
     assert cur.fetchone()["count"] == 1
+
+
+def test_broker_sync_status_uses_canonical_cash_qty_and_broker_order_ids():
+    db = SQLiteBrokerSyncTestDB()
+    sync_broker_state(db, broker_state())
+    cur = db.conn.cursor()
+    cur.execute("UPDATE accounts SET cash_balance = ? WHERE account_id = ?", ("93276.78000", 1))
+    db.conn.commit()
+
+    status = broker_sync_status(db, account_id=1)
+
+    assert status["has_snapshot"] is True
+    assert status["mismatch"]["is_synced"] is True
+    assert status["mismatch"]["mismatch_count"] == 0
+    assert status["database"]["position_count"] == 1
+    assert status["database"]["open_order_count"] == 1
