@@ -4,6 +4,8 @@ import json
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
+from broker_sync_diagnostics import broker_sync_diagnostics, broker_sync_summary
+
 
 BUCKET_TARGETS = {
     "core_dividend": Decimal("0.50"),
@@ -209,10 +211,14 @@ def _mismatch_report(db_account: Dict[str, Any], db_positions: List[Dict[str, An
         mismatches.append({"field": "positions", "database": db_position_map, "broker": broker_position_map})
     if db_order_ids != broker_order_ids:
         mismatches.append({"field": "open_order_ids", "database": sorted(db_order_ids), "broker": sorted(broker_order_ids)})
+    mismatch_count = len(mismatches)
+    has_snapshot = bool(snapshot)
     return {
-        "is_synced": len(mismatches) == 0 and bool(snapshot),
-        "mismatch_count": len(mismatches),
+        "is_synced": mismatch_count == 0 and has_snapshot,
+        "mismatch_count": mismatch_count,
         "mismatches": mismatches,
+        "diagnostics": broker_sync_diagnostics(db_account, db_positions, db_orders, snapshot),
+        "summary": broker_sync_summary(has_snapshot=has_snapshot, mismatch_count=mismatch_count),
     }
 
 
