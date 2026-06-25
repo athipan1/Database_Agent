@@ -104,6 +104,8 @@ def test_broker_sync_status_reports_synced_after_sync():
     assert status["database"]["open_order_count"] == 0
     assert status["mismatch"]["is_synced"] is True
     assert status["mismatch"]["mismatch_count"] == 0
+    assert status["mismatch"]["summary"]["status"] == "synced"
+    assert status["mismatch"]["diagnostics"]["positions"]["matches"] is True
     assert status["latest_snapshot"]["summary"]["position_count"] == 2
 
 
@@ -115,3 +117,31 @@ def test_broker_sync_status_reports_stale_database_without_sync():
     assert status["has_snapshot"] is False
     assert status["database"]["position_count"] == 0
     assert status["mismatch"]["is_synced"] is False
+    assert status["mismatch"]["summary"]["status"] == "no_snapshot"
+    assert status["mismatch"]["summary"]["recommended_action"] == "capture_broker_snapshot"
+
+
+def test_broker_sync_status_reports_position_and_order_diagnostics():
+    db = SQLiteStatusTestDB()
+    state = broker_state()
+    state["open_orders"] = [
+        {"id": "broker-order-1", "symbol": "AAPL", "side": "sell", "qty": "1", "type": "stop", "status": "new", "stop_price": "250"}
+    ]
+    sync_broker_state(db, state)
+
+    cur = db.conn.cursor()
+    cur.execute("UPDATE accounts SET cash_balance = '100.00' WHERE account_id = 1")
+    cur.execute("UPDATE positions SET quantity = 2 WHERE account_id = 1 AND symbol = 'AAPL'")
+    cur.execute("DELETE FROM orders WHERE broker_order_id = 'broker-order-1'")
+    db.conn.commit()
+
+    status = broker_sync_status(db, account_id=1)
+    diagnostics = status["mismatch"]["diagnostics"]
+
+    assert status["mismatch"]["is_synced"] is False
+    assert status["mismatch"]["summary"]["status"] == "mismatch"
+    assert diagnostics["account"]["cash_delta"] == "100323.40"
+    assert diagnostics["positions"]["quantity_mismatches"] == [
+        {"symbol": "AAPL", "database_qty": "2.000000", "broker_qty": "1.000000"}
+    ]
+    assert diagnostics["open_orders"]["missing_in_database"] == ["broker-order-1"]
