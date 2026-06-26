@@ -79,7 +79,7 @@ def _register_status_route(db) -> None:
     app = getattr(main_module, "app", None)
     if app is None:
         return
-    if getattr(app.state, "broker_sync_status_route_registered", False):
+    if getattr(app.state, "broker_sync_routes_registered", False):
         return
 
     from broker_sync_status_repository import broker_sync_status
@@ -101,6 +101,9 @@ def _register_status_route(db) -> None:
     async def broker_sync_status_endpoint(account_id: int = 1):
         return wrap_response(data=broker_sync_status(db, account_id=account_id))
 
+    async def broker_sync_snapshot_endpoint(payload: Dict[str, Any]):
+        return wrap_response(data=sync_broker_state(db, payload))
+
     app.add_api_route(
         "/broker-sync/status",
         broker_sync_status_endpoint,
@@ -108,7 +111,16 @@ def _register_status_route(db) -> None:
         dependencies=dependencies,
         name="broker_sync_status_endpoint",
     )
+    app.add_api_route(
+        "/broker-sync/snapshot",
+        broker_sync_snapshot_endpoint,
+        methods=["POST"],
+        dependencies=dependencies,
+        name="broker_sync_snapshot_endpoint",
+    )
     app.state.broker_sync_status_route_registered = True
+    app.state.broker_sync_snapshot_route_registered = True
+    app.state.broker_sync_routes_registered = True
 
 
 def setup_broker_sync_tables(db) -> None:
