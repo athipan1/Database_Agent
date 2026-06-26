@@ -12,7 +12,7 @@ class SQLiteRouteTestDB:
     param_style = "?"
 
     def __init__(self):
-        self.conn = sqlite3.connect(":memory:")
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.setup_database()
 
