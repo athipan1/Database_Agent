@@ -2,6 +2,7 @@ import sqlite3
 from contextlib import contextmanager
 
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 import broker_sync_repository
 
@@ -37,13 +38,47 @@ class SQLiteRouteTestDB:
         self.conn.commit()
 
 
-def test_setup_broker_sync_tables_registers_status_route(monkeypatch):
+def _register_routes(monkeypatch):
     app = FastAPI()
     fake_main = type("FakeMain", (), {"app": app})()
     monkeypatch.setitem(__import__("sys").modules, "main", fake_main)
+    db = SQLiteRouteTestDB()
+    broker_sync_repository.setup_broker_sync_tables(db)
+    return app, db
 
-    broker_sync_repository.setup_broker_sync_tables(SQLiteRouteTestDB())
+
+def test_setup_broker_sync_tables_registers_status_and_snapshot_routes(monkeypatch):
+    app, _ = _register_routes(monkeypatch)
 
     paths = {route.path for route in app.routes}
     assert "/broker-sync/status" in paths
+    assert "/broker-sync/snapshot" in paths
     assert app.state.broker_sync_status_route_registered is True
+    assert app.state.broker_sync_snapshot_route_registered is True
+
+
+def test_broker_sync_snapshot_route_captures_snapshot(monkeypatch):
+    app, db = _register_routes(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/broker-sync/snapshot", json={
+        "account_id": 1,
+        "broker": "ALPACA",
+        "paper": True,
+        "account": {"cash": "93276.77", "equity": "103313.29"},
+        "positions": [{"symbol": "ADBE", "qty": "52", "avg_entry_price": "198.76", "current_price": "193.01", "market_value": "10036.52"}],
+        "open_orders": [{"id": "stop-adbe", "symbol": "ADBE", "side": "sell", "qty": "52", "type": "stop", "status": "new", "stop_price": "190.12"}],
+        "summary": {"position_count": 1, "open_order_count": 1},
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert body["data"]["positions_synced"] == 1
+    assert body["data"]["open_orders_synced"] == 1
+
+    status = client.get("/broker-sync/status?account_id=1").json()["data"]
+    assert status["has_snapshot"] is True
+    assert status["mismatch"]["is_synced"] is True
+    assert status["database"]["position_count"] == 1
+    assert status["database"]["open_order_count"] == 1
