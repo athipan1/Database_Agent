@@ -13,6 +13,7 @@ except Exception:  # pragma: no cover
 
 
 VALID_STRATEGY_BUCKETS = {"core_dividend", "value_rebound", "news_momentum", "unassigned"}
+UNASSIGNED = "unassigned"
 
 
 def _param(db) -> str:
@@ -39,6 +40,11 @@ def _qty(value: Any) -> int:
         return 0
 
 
+def _normalize_strategy_bucket(raw: Any) -> str:
+    bucket = str(raw or UNASSIGNED).strip().lower()
+    return bucket if bucket in VALID_STRATEGY_BUCKETS else UNASSIGNED
+
+
 def _strategy_bucket(item: Dict[str, Any]) -> str:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     raw = (
@@ -48,10 +54,45 @@ def _strategy_bucket(item: Dict[str, Any]) -> str:
         or metadata.get("strategy_bucket")
         or metadata.get("bucket")
         or metadata.get("allocation_bucket")
-        or "unassigned"
+        or UNASSIGNED
     )
-    bucket = str(raw or "unassigned").strip().lower()
-    return bucket if bucket in VALID_STRATEGY_BUCKETS else "unassigned"
+    return _normalize_strategy_bucket(raw)
+
+
+def _strategy_bucket_or_existing(item: Dict[str, Any], existing_bucket: Any) -> str:
+    incoming_bucket = _strategy_bucket(item)
+    if incoming_bucket != UNASSIGNED:
+        return incoming_bucket
+    existing = _normalize_strategy_bucket(existing_bucket)
+    return existing if existing != UNASSIGNED else UNASSIGNED
+
+
+def _existing_position_buckets(cursor, db, account_id: int) -> Dict[str, str]:
+    p = _param(db)
+    try:
+        cursor.execute(f"SELECT symbol, strategy_bucket FROM positions WHERE account_id = {p}", (account_id,))
+        return {
+            str(row[0] if not isinstance(row, dict) else row.get("symbol") or "").upper(): _normalize_strategy_bucket(
+                row[1] if not isinstance(row, dict) else row.get("strategy_bucket")
+            )
+            for row in cursor.fetchall()
+        }
+    except Exception:
+        return {}
+
+
+def _existing_order_bucket(cursor, db, broker_id: str) -> str:
+    p = _param(db)
+    try:
+        cursor.execute(f"SELECT strategy_bucket FROM orders WHERE broker_order_id = {p}", (str(broker_id),))
+        row = cursor.fetchone()
+        if not row:
+            return UNASSIGNED
+        if isinstance(row, dict):
+            return _normalize_strategy_bucket(row.get("strategy_bucket"))
+        return _normalize_strategy_bucket(row[0])
+    except Exception:
+        return UNASSIGNED
 
 
 def _status(value: Any) -> str:
@@ -187,6 +228,7 @@ def _ensure_account(cursor, db, account_id: int, state: Dict[str, Any]) -> Decim
 def _replace_positions(cursor, db, account_id: int, positions: List[Dict[str, Any]]) -> int:
     p = _param(db)
     synced_at = _now(db)
+    existing_buckets = _existing_position_buckets(cursor, db, account_id)
     cursor.execute(f"DELETE FROM positions WHERE account_id = {p}", (account_id,))
     count = 0
     for item in positions or []:
@@ -197,7 +239,7 @@ def _replace_positions(cursor, db, account_id: int, positions: List[Dict[str, An
         average_cost = _decimal(item.get("avg_entry_price") or item.get("average_cost"))
         current_price = _decimal(item.get("current_price"), average_cost)
         market_value = _decimal(item.get("market_value"), Decimal(quantity) * current_price)
-        strategy_bucket = _strategy_bucket(item)
+        strategy_bucket = _strategy_bucket_or_existing(item, existing_buckets.get(symbol))
         cursor.execute(
             f"""
             INSERT INTO positions (account_id, symbol, quantity, average_cost, current_market_price, market_value, strategy_bucket, broker_synced_at)
@@ -227,7 +269,8 @@ def _sync_open_orders(cursor, db, account_id: int, rows: List[Dict[str, Any]]) -
         raw_state = str(item.get("status") or "")
         filled = _qty(item.get("filled_qty") or item.get("executed_quantity"))
         submitted_at = item.get("submitted_at") or synced_at
-        strategy_bucket = _strategy_bucket(item)
+        existing_bucket = _existing_order_bucket(cursor, db, str(broker_id))
+        strategy_bucket = _strategy_bucket_or_existing(item, existing_bucket)
         cursor.execute(f"SELECT order_id FROM orders WHERE broker_order_id = {p}", (str(broker_id),))
         if cursor.fetchone():
             cursor.execute(
@@ -319,7 +362,6 @@ def sync_broker_state(db, broker_state: Dict[str, Any]) -> Dict[str, Any]:
                 "positions_synced": positions_synced,
                 "open_orders_synced": open_orders_synced,
                 "missing_open_orders_marked_cancelled": missing_marked,
-                "synced_at": datetime.now(timezone.utc).isoformat(),
             }
         except Exception:
             conn.rollback()

@@ -141,6 +141,66 @@ def test_sync_broker_state_updates_cash_positions_and_open_orders():
     assert {order["status"] for order in orders} == {"placed"}
 
 
+def test_sync_broker_state_preserves_existing_position_bucket_when_broker_has_none():
+    db = SQLiteBrokerSyncTestDB()
+    sync_broker_state(db, broker_state())
+
+    cur = db.conn.cursor()
+    cur.execute("UPDATE positions SET strategy_bucket = ? WHERE symbol = ?", ("core_dividend", "ADBE"))
+    db.conn.commit()
+
+    sync_broker_state(db, broker_state())
+
+    positions_by_symbol = {p["symbol"]: p for p in db.get_positions(1)}
+    assert positions_by_symbol["ADBE"]["strategy_bucket"] == "core_dividend"
+
+
+def test_sync_broker_state_preserves_existing_order_bucket_when_broker_has_none():
+    db = SQLiteBrokerSyncTestDB()
+    sync_broker_state(db, broker_state())
+
+    cur = db.conn.cursor()
+    cur.execute("UPDATE orders SET strategy_bucket = ? WHERE broker_order_id = ?", ("core_dividend", "stop-adbe"))
+    db.conn.commit()
+
+    sync_broker_state(db, broker_state())
+
+    orders_by_broker_id = {order["broker_order_id"]: order for order in db.get_orders(1)}
+    assert orders_by_broker_id["stop-adbe"]["strategy_bucket"] == "core_dividend"
+
+
+def test_sync_broker_state_prefers_explicit_broker_bucket_over_existing_bucket():
+    db = SQLiteBrokerSyncTestDB()
+    sync_broker_state(db, broker_state())
+
+    cur = db.conn.cursor()
+    cur.execute("UPDATE positions SET strategy_bucket = ? WHERE symbol = ?", ("core_dividend", "ADBE"))
+    cur.execute("UPDATE orders SET strategy_bucket = ? WHERE broker_order_id = ?", ("core_dividend", "stop-adbe"))
+    db.conn.commit()
+
+    updated = broker_state(open_orders=[
+        {
+            "id": "stop-adbe",
+            "symbol": "ADBE",
+            "side": "sell",
+            "qty": "52",
+            "filled_qty": "0",
+            "type": "stop",
+            "time_in_force": "gtc",
+            "status": "new",
+            "submitted_at": "2026-06-24T16:01:39Z",
+            "stop_price": "190.12",
+            "strategy_bucket": "value_rebound",
+        },
+    ])
+    updated["positions"][0]["strategy_bucket"] = "value_rebound"
+
+    sync_broker_state(db, updated)
+
+    assert db.get_positions(1)[0]["strategy_bucket"] == "value_rebound"
+    assert db.get_orders(1)[0]["strategy_bucket"] == "value_rebound"
+
+
 def test_sync_broker_state_marks_missing_broker_orders_cancelled():
     db = SQLiteBrokerSyncTestDB()
     sync_broker_state(db, broker_state())
