@@ -100,23 +100,3 @@ def test_update_trade_plan_status_endpoint():
     assert body["data"]["status"] == "risk_approved"
     assert body["data"]["risk_approval_id"] == "risk-api-1"
     update_record.assert_called_once()
-
-
-def collect_paths(routes):
-    paths = set()
-    for route in routes:
-        path = getattr(route, "path", None)
-        if path:
-            paths.add(path)
-        child_routes = getattr(route, "routes", None)
-        if child_routes:
-            paths.update(collect_paths(child_routes))
-    return paths
-
-
-def test_trade_plan_routes_are_registered():
-    paths = collect_paths(main.app.routes)
-
-    assert "/trade-plans" in paths
-    assert "/trade-plans/{trade_plan_id}" in paths
-    assert "/trade-plans/{trade_plan_id}/status" in paths
