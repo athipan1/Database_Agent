@@ -103,7 +103,7 @@ def test_update_trade_plan_status_endpoint():
 
 
 def test_trade_plan_routes_are_registered():
-    paths = {route.path for route in main.app.routes}
+    paths = {getattr(route, "path", None) for route in main.app.routes}
 
     assert "/trade-plans" in paths
     assert "/trade-plans/{trade_plan_id}" in paths
