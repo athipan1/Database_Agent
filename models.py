@@ -77,7 +77,7 @@ class Position(CustomBaseModel):
 class BrokerSyncBody(CustomBaseModel):
     source: str = "execution_agent"
     account_id: Union[int, str] = 1
-    broker: Optional[str] = None
+    broker: Optional[bool] = None
     paper: Optional[bool] = None
     captured_at: Optional[datetime.datetime] = None
     account: Dict[str, Any] = Field(default_factory=dict)
@@ -273,6 +273,9 @@ class CreateRiskApprovalBody(CustomBaseModel):
 
 class MarkRiskApprovalUsedBody(CustomBaseModel):
     order_id: int
+
+class RevokeRiskApprovalBody(CustomBaseModel):
+    reason: str = "manual_revoke"
 
 class SignalHistory(CustomBaseModel):
     signal_id: str
