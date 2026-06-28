@@ -7,8 +7,12 @@ from fastapi import HTTPException
 from models import CreateRiskApprovalBody, RiskApproval
 
 
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return _now().isoformat()
 
 
 def _parse_dt(value: Any) -> Optional[datetime]:
@@ -29,6 +33,23 @@ def _row_get(row: Any, key: str, index: int = 0) -> Any:
         return row[key]
     except Exception:
         return row[index]
+
+
+def _metadata_with_event(metadata: Dict[str, Any] | None, event: str, extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    next_metadata = dict(metadata or {})
+    events = list(next_metadata.get("lifecycle_events") or [])
+    event_row = {"event": event, "timestamp": _now_iso()}
+    if extra:
+        event_row.update(extra)
+    events.append(event_row)
+    next_metadata["lifecycle_events"] = events
+    next_metadata["last_lifecycle_event"] = event
+    next_metadata["last_lifecycle_event_at"] = event_row["timestamp"]
+    return next_metadata
+
+
+def _dump_metadata(metadata: Dict[str, Any] | None) -> str:
+    return json.dumps(metadata or {}, sort_keys=True)
 
 
 def _format_row(row: Any) -> Optional[RiskApproval]:
@@ -54,6 +75,10 @@ def _format_row(row: Any) -> Optional[RiskApproval]:
     )
 
 
+def _approval_expires_at(approval: RiskApproval) -> datetime:
+    return approval.expires_at if approval.expires_at.tzinfo else approval.expires_at.replace(tzinfo=timezone.utc)
+
+
 def setup_risk_approval_table(db) -> None:
     timestamp_type = "TEXT" if db.db_type == "sqlite" else "TIMESTAMPTZ"
     with db.connection_scope() as conn:
@@ -77,6 +102,7 @@ def setup_risk_approval_table(db) -> None:
             if db.db_type == "postgres":
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_risk_approvals_status_expires ON risk_approvals(status, expires_at)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_risk_approvals_order_id ON risk_approvals(order_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_risk_approvals_account_symbol ON risk_approvals(account_id, symbol)")
             conn.commit()
         except Exception:
             conn.rollback()
@@ -87,9 +113,13 @@ def setup_risk_approval_table(db) -> None:
 
 def create_risk_approval(db, body: CreateRiskApprovalBody) -> RiskApproval:
     setup_risk_approval_table(db)
+    expires_at = body.expires_at if body.expires_at.tzinfo else body.expires_at.replace(tzinfo=timezone.utc)
+    if expires_at <= _now():
+        raise HTTPException(status_code=422, detail="Risk approval expires_at must be in the future")
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
         try:
+            metadata = _metadata_with_event(body.metadata or {}, "created", {"source": "database_agent"})
             params = (
                 body.approval_id,
                 str(body.account_id),
@@ -97,8 +127,8 @@ def create_risk_approval(db, body: CreateRiskApprovalBody) -> RiskApproval:
                 body.side.value.lower(),
                 int(body.approved_quantity),
                 "approved",
-                body.expires_at.isoformat(),
-                json.dumps(body.metadata or {}),
+                expires_at.isoformat(),
+                _dump_metadata(metadata),
             )
             cursor.execute(f"""
                 INSERT INTO risk_approvals
@@ -110,6 +140,9 @@ def create_risk_approval(db, body: CreateRiskApprovalBody) -> RiskApproval:
             if not approval:
                 raise RuntimeError("Risk approval was inserted but could not be read back")
             return approval
+        except HTTPException:
+            conn.rollback()
+            raise
         except Exception:
             conn.rollback()
             raise
@@ -123,14 +156,17 @@ def get_risk_approval(db, approval_id: str) -> Optional[RiskApproval]:
         cursor = db.get_cursor(conn)
         try:
             cursor.execute(f"SELECT * FROM risk_approvals WHERE approval_id = {db.param_style}", (approval_id,))
-            return _format_row(cursor.fetchone())
+            approval = _format_row(cursor.fetchone())
+            if approval and approval.status == "approved" and _approval_expires_at(approval) <= _now():
+                return expire_risk_approval(db, approval_id, reason="read_expired")
+            return approval
         finally:
             cursor.close()
 
 
 def mark_risk_approval_used(db, approval_id: str, order_id: Union[int, str]) -> RiskApproval:
     setup_risk_approval_table(db)
-    now = datetime.now(timezone.utc)
+    now = _now()
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
         try:
@@ -139,26 +175,91 @@ def mark_risk_approval_used(db, approval_id: str, order_id: Union[int, str]) -> 
             approval = _format_row(cursor.fetchone())
             if not approval:
                 raise HTTPException(status_code=404, detail=f"Risk approval {approval_id} not found")
-            expires_at = approval.expires_at if approval.expires_at.tzinfo else approval.expires_at.replace(tzinfo=timezone.utc)
+            expires_at = _approval_expires_at(approval)
             if approval.status != "approved":
                 raise HTTPException(status_code=409, detail=f"Risk approval {approval_id} is already {approval.status}")
             if expires_at <= now:
+                metadata = _metadata_with_event(approval.metadata, "expired", {"reason": "use_after_expiry"})
                 cursor.execute(
-                    f"UPDATE risk_approvals SET status = 'expired' WHERE approval_id = {db.param_style}",
-                    (approval_id,),
+                    f"UPDATE risk_approvals SET status = 'expired', metadata = {db.param_style} WHERE approval_id = {db.param_style}",
+                    (_dump_metadata(metadata), approval_id),
                 )
                 conn.commit()
                 raise HTTPException(status_code=409, detail=f"Risk approval {approval_id} has expired")
+            metadata = _metadata_with_event(approval.metadata, "used", {"order_id": int(order_id)})
             cursor.execute(f"""
                 UPDATE risk_approvals
-                SET status = 'used', used_at = {db.param_style}, order_id = {db.param_style}
+                SET status = 'used', used_at = {db.param_style}, order_id = {db.param_style}, metadata = {db.param_style}
                 WHERE approval_id = {db.param_style}
-            """, (_now_iso(), int(order_id), approval_id))
+            """, (_now_iso(), int(order_id), _dump_metadata(metadata), approval_id))
             conn.commit()
             used = get_risk_approval(db, approval_id)
             if not used:
                 raise RuntimeError("Risk approval was used but could not be read back")
             return used
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+
+def revoke_risk_approval(db, approval_id: str, reason: str = "manual_revoke") -> RiskApproval:
+    setup_risk_approval_table(db)
+    with db.connection_scope() as conn:
+        cursor = db.get_cursor(conn)
+        try:
+            lock_clause = " FOR UPDATE" if db.db_type == "postgres" else ""
+            cursor.execute(f"SELECT * FROM risk_approvals WHERE approval_id = {db.param_style}{lock_clause}", (approval_id,))
+            approval = _format_row(cursor.fetchone())
+            if not approval:
+                raise HTTPException(status_code=404, detail=f"Risk approval {approval_id} not found")
+            if approval.status != "approved":
+                raise HTTPException(status_code=409, detail=f"Risk approval {approval_id} is already {approval.status}")
+            metadata = _metadata_with_event(approval.metadata, "revoked", {"reason": reason})
+            cursor.execute(
+                f"UPDATE risk_approvals SET status = 'revoked', metadata = {db.param_style} WHERE approval_id = {db.param_style}",
+                (_dump_metadata(metadata), approval_id),
+            )
+            conn.commit()
+            revoked = get_risk_approval(db, approval_id)
+            if not revoked:
+                raise RuntimeError("Risk approval was revoked but could not be read back")
+            return revoked
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+
+def expire_risk_approval(db, approval_id: str, reason: str = "manual_expire") -> RiskApproval:
+    setup_risk_approval_table(db)
+    with db.connection_scope() as conn:
+        cursor = db.get_cursor(conn)
+        try:
+            cursor.execute(f"SELECT * FROM risk_approvals WHERE approval_id = {db.param_style}", (approval_id,))
+            approval = _format_row(cursor.fetchone())
+            if not approval:
+                raise HTTPException(status_code=404, detail=f"Risk approval {approval_id} not found")
+            if approval.status != "approved":
+                return approval
+            metadata = _metadata_with_event(approval.metadata, "expired", {"reason": reason})
+            cursor.execute(
+                f"UPDATE risk_approvals SET status = 'expired', metadata = {db.param_style} WHERE approval_id = {db.param_style}",
+                (_dump_metadata(metadata), approval_id),
+            )
+            conn.commit()
+            expired = get_risk_approval(db, approval_id)
+            if not expired:
+                raise RuntimeError("Risk approval was expired but could not be read back")
+            return expired
         except HTTPException:
             conn.rollback()
             raise
