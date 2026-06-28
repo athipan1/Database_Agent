@@ -2,11 +2,11 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Security
+from fastapi import APIRouter, Depends, HTTPException, Query, Security
 from fastapi.security import APIKeyHeader
 
-from plan_record_repository import create_plan_record, get_plan_record, update_plan_record_status
-from trade_plan_models import CreateTradePlanBody, TradePlanRecord, UpdateTradePlanStatusBody
+from plan_record_repository import create_plan_record, get_plan_record, list_plan_records, update_plan_record_status
+from trade_plan_models import CreateTradePlanBody, ListTradePlansQuery, TradePlanRecord, UpdateTradePlanStatusBody
 
 router = APIRouter()
 
@@ -45,6 +45,38 @@ def create_plan_record_routes(db, get_api_key_dependency, get_correlation_id_dep
             logging.error(f"TradePlan creation failed: {exc}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(exc))
         return wrap_response(data=record)
+
+    @router.get("/trade-plans", response_model=dict)
+    async def list_trade_plans_endpoint(
+        account_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+        status: Optional[str] = None,
+        strategy: Optional[str] = None,
+        strategy_bucket: Optional[str] = None,
+        risk_approval_id: Optional[str] = None,
+        order_id: Optional[int] = None,
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+        sort: str = Query(default="updated_at", pattern="^(created_at|updated_at)$"),
+        order: str = Query(default="desc", pattern="^(asc|desc)$"),
+        api_key: str = Depends(_api_key),
+        correlation_id: str = Depends(_correlation_id),
+    ):
+        query = ListTradePlansQuery(
+            account_id=account_id,
+            symbol=symbol,
+            status=status,
+            strategy=strategy,
+            strategy_bucket=strategy_bucket,
+            risk_approval_id=risk_approval_id,
+            order_id=order_id,
+            limit=limit,
+            offset=offset,
+            sort=sort,
+            order=order,
+        )
+        records = list_plan_records(db, query)
+        return wrap_response(data=records)
 
     @router.get("/trade-plans/{trade_plan_id}", response_model=dict)
     async def get_trade_plan_endpoint(

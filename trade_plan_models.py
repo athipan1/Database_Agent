@@ -72,3 +72,17 @@ class UpdateTradePlanStatusBody(TradePlanBaseModel):
     execution_job_id: Optional[Union[int, str]] = None
     broker_order_id: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ListTradePlansQuery(TradePlanBaseModel):
+    account_id: Optional[Union[int, str]] = None
+    symbol: Optional[str] = None
+    status: Optional[TradePlanLifecycleStatus] = None
+    strategy: Optional[str] = None
+    strategy_bucket: Optional[StrategyBucket] = None
+    risk_approval_id: Optional[str] = None
+    order_id: Optional[int] = None
+    limit: int = Field(default=100, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+    sort: Literal["created_at", "updated_at"] = "updated_at"
+    order: Literal["asc", "desc"] = "desc"

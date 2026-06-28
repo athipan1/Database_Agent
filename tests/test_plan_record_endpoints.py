@@ -15,11 +15,11 @@ from trade_plan_models import TradePlanLifecycleStatus, TradePlanRecord
 client = TestClient(main.app)
 
 
-def plan_record(status=TradePlanLifecycleStatus.CREATED):
+def plan_record(status=TradePlanLifecycleStatus.CREATED, trade_plan_id="plan-api-1", symbol="AAPL"):
     return TradePlanRecord(
-        trade_plan_id="plan-api-1",
+        trade_plan_id=trade_plan_id,
         account_id="1",
-        symbol="AAPL",
+        symbol=symbol,
         side=OrderSide.BUY,
         status=status,
         correlation_id="corr-api-1",
@@ -27,7 +27,7 @@ def plan_record(status=TradePlanLifecycleStatus.CREATED):
         strategy="trend_pullback",
         strategy_bucket="value_rebound",
         risk_approval_id="risk-api-1" if status == TradePlanLifecycleStatus.RISK_APPROVED else None,
-        plan={"plan_id": "plan-api-1", "symbol": "AAPL"},
+        plan={"plan_id": trade_plan_id, "symbol": symbol},
         lifecycle=[{"status": status.value, "timestamp": "2026-06-28T00:00:00+00:00"}],
         metadata={"test": "plan_record_endpoint"},
     )
@@ -62,6 +62,30 @@ def test_create_trade_plan_endpoint():
     assert body["data"]["trade_plan_id"] == "plan-api-1"
     assert body["data"]["symbol"] == "AAPL"
     create_record.assert_called_once()
+
+
+def test_list_trade_plans_endpoint():
+    records = [plan_record(TradePlanLifecycleStatus.FILLED, trade_plan_id="plan-api-1", symbol="AAPL")]
+    with patch.object(main, "DATABASE_AGENT_API_KEY", "test-key"), \
+            patch("plan_record_routes.list_plan_records", return_value=records) as list_records:
+        response = client.get(
+            "/trade-plans?account_id=1&symbol=aapl&status=filled&strategy_bucket=value_rebound&limit=50&offset=10&sort=created_at&order=asc",
+            headers=headers(),
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert body["data"][0]["trade_plan_id"] == "plan-api-1"
+    query = list_records.call_args.args[1]
+    assert query.account_id == "1"
+    assert query.symbol == "aapl"
+    assert query.status == TradePlanLifecycleStatus.FILLED
+    assert query.strategy_bucket == "value_rebound"
+    assert query.limit == 50
+    assert query.offset == 10
+    assert query.sort == "created_at"
+    assert query.order == "asc"
 
 
 def test_get_trade_plan_endpoint():

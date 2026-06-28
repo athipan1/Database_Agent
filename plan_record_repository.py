@@ -1,10 +1,10 @@
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 
-from trade_plan_models import CreateTradePlanBody, TradePlanRecord, UpdateTradePlanStatusBody
+from trade_plan_models import CreateTradePlanBody, ListTradePlansQuery, TradePlanRecord, UpdateTradePlanStatusBody
 
 
 def _now_iso() -> str:
@@ -177,6 +177,48 @@ def get_plan_record(db, trade_plan_id: str) -> Optional[TradePlanRecord]:
         try:
             cursor.execute(f"SELECT * FROM trade_plans WHERE trade_plan_id = {db.param_style}", (trade_plan_id,))
             return _format_row(cursor.fetchone())
+        finally:
+            cursor.close()
+
+
+def list_plan_records(db, query: ListTradePlansQuery) -> List[TradePlanRecord]:
+    setup_plan_record_table(db)
+    where_clauses: List[str] = []
+    params: List[Any] = []
+
+    if query.account_id is not None:
+        where_clauses.append(f"account_id = {db.param_style}")
+        params.append(str(query.account_id))
+    if query.symbol:
+        where_clauses.append(f"symbol = {db.param_style}")
+        params.append(query.symbol.upper())
+    if query.status:
+        where_clauses.append(f"status = {db.param_style}")
+        params.append(_status_value(query.status))
+    if query.strategy:
+        where_clauses.append(f"strategy = {db.param_style}")
+        params.append(query.strategy)
+    if query.strategy_bucket:
+        where_clauses.append(f"strategy_bucket = {db.param_style}")
+        params.append(query.strategy_bucket.value if hasattr(query.strategy_bucket, "value") else str(query.strategy_bucket))
+    if query.risk_approval_id:
+        where_clauses.append(f"risk_approval_id = {db.param_style}")
+        params.append(query.risk_approval_id)
+    if query.order_id is not None:
+        where_clauses.append(f"order_id = {db.param_style}")
+        params.append(query.order_id)
+
+    where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    sort_column = "created_at" if query.sort == "created_at" else "updated_at"
+    sort_order = "ASC" if query.order == "asc" else "DESC"
+    sql = f"SELECT * FROM trade_plans{where_sql} ORDER BY {sort_column} {sort_order} LIMIT {db.param_style} OFFSET {db.param_style}"
+    params.extend([query.limit, query.offset])
+
+    with db.connection_scope() as conn:
+        cursor = db.get_cursor(conn)
+        try:
+            cursor.execute(sql, tuple(params))
+            return [record for record in (_format_row(row) for row in cursor.fetchall()) if record is not None]
         finally:
             cursor.close()
 
