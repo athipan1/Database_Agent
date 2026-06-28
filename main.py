@@ -53,6 +53,8 @@ from fill_repository import (
 )
 from session_risk_repository import build_session_risk_snapshot
 from broker_sync_repository import setup_broker_sync_tables, sync_broker_state
+from plan_record_repository import setup_plan_record_table
+from plan_record_routes import create_plan_record_routes
 from models import (
     AccountBalance, Position, Order, CreateOrderBody,
     OrderExecutionResponse, ExecutionTrade, Price, StandardAgentResponse,
@@ -156,6 +158,7 @@ def get_api_key(api_key_header: str = Security(api_key_header)):
 
 
 db = TradingDB()
+app.include_router(create_plan_record_routes(db, get_api_key, get_correlation_id))
 
 alpaca_client = AlpacaClient(
     api_key=os.environ.get("ALPACA_API_KEY"),
@@ -252,6 +255,7 @@ async def startup_event():
         setup_execution_job_table(db)
         setup_fill_table(db)
         setup_broker_sync_tables(db)
+        setup_plan_record_table(db)
         logging.info("Database tables verification/creation complete.")
         schedule.every().day.at("00:00").do(run_ingestion_job)
         schedule.every().day.at("01:00").do(db.ensure_price_partitions)
