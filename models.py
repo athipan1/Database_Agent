@@ -274,6 +274,9 @@ class CreateRiskApprovalBody(CustomBaseModel):
 class MarkRiskApprovalUsedBody(CustomBaseModel):
     order_id: int
 
+class RevokeRiskApprovalBody(CustomBaseModel):
+    reason: str = "manual_revoke"
+
 class SignalHistory(CustomBaseModel):
     signal_id: str
     account_id: Union[int, str]
@@ -338,13 +341,3 @@ class SessionRiskSnapshot(CustomBaseModel):
     minutes_since_last_symbol_trade: Optional[float] = None
     emergency_halt: bool = False
     source: str = "database_agent"
-    generated_at: Optional[datetime.datetime] = None
-
-class Price(CustomBaseModel):
-    symbol: str
-    timestamp: datetime.datetime
-    open: Decimal
-    high: Decimal
-    low: Decimal
-    close: Decimal
-    volume: int
