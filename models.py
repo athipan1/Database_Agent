@@ -77,7 +77,7 @@ class Position(CustomBaseModel):
 class BrokerSyncBody(CustomBaseModel):
     source: str = "execution_agent"
     account_id: Union[int, str] = 1
-    broker: Optional[str] = None
+    broker: Optional[bool] = None
     paper: Optional[bool] = None
     captured_at: Optional[datetime.datetime] = None
     account: Dict[str, Any] = Field(default_factory=dict)
@@ -341,3 +341,13 @@ class SessionRiskSnapshot(CustomBaseModel):
     minutes_since_last_symbol_trade: Optional[float] = None
     emergency_halt: bool = False
     source: str = "database_agent"
+    generated_at: Optional[datetime.datetime] = None
+
+class Price(CustomBaseModel):
+    symbol: str
+    timestamp: datetime.datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: int
