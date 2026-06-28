@@ -38,6 +38,19 @@ class RiskApprovalStatus(str, Enum):
     REVOKED = "revoked"
     EXPIRED = "expired"
 
+class TradePlanLifecycleStatus(str, Enum):
+    CREATED = "created"
+    RISK_PENDING = "risk_pending"
+    RISK_APPROVED = "risk_approved"
+    EXECUTION_SUBMITTED = "execution_submitted"
+    QUEUED = "queued"
+    PLACED = "placed"
+    PARTIALLY_FILLED = "partially_filled"
+    FILLED = "filled"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+    CLOSED = "closed"
+
 StrategyBucket = Literal["core_dividend", "value_rebound", "news_momentum", "unassigned"]
 
 class CustomBaseModel(BaseModel):
@@ -274,6 +287,52 @@ class CreateRiskApprovalBody(CustomBaseModel):
 class MarkRiskApprovalUsedBody(CustomBaseModel):
     order_id: int
 
+class TradePlanRecord(CustomBaseModel):
+    trade_plan_id: str
+    account_id: Union[int, str]
+    symbol: str
+    side: OrderSide
+    status: TradePlanLifecycleStatus = TradePlanLifecycleStatus.CREATED
+    correlation_id: Optional[str] = None
+    source: str = "manager-agent"
+    strategy: str = "unassigned"
+    strategy_bucket: StrategyBucket = "unassigned"
+    risk_approval_id: Optional[str] = None
+    order_id: Optional[int] = None
+    execution_job_id: Optional[Union[int, str]] = None
+    broker_order_id: Optional[str] = None
+    plan: Dict[str, Any] = Field(default_factory=dict)
+    lifecycle: List[Dict[str, Any]] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime.datetime] = None
+    updated_at: Optional[datetime.datetime] = None
+
+class CreateTradePlanBody(CustomBaseModel):
+    trade_plan_id: str
+    account_id: Union[int, str]
+    symbol: str
+    side: OrderSide
+    status: TradePlanLifecycleStatus = TradePlanLifecycleStatus.CREATED
+    correlation_id: Optional[str] = None
+    source: str = "manager-agent"
+    strategy: str = "unassigned"
+    strategy_bucket: StrategyBucket = "unassigned"
+    risk_approval_id: Optional[str] = None
+    order_id: Optional[int] = None
+    execution_job_id: Optional[Union[int, str]] = None
+    broker_order_id: Optional[str] = None
+    plan: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class UpdateTradePlanStatusBody(CustomBaseModel):
+    status: TradePlanLifecycleStatus
+    reason: Optional[str] = None
+    risk_approval_id: Optional[str] = None
+    order_id: Optional[int] = None
+    execution_job_id: Optional[Union[int, str]] = None
+    broker_order_id: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
 class SignalHistory(CustomBaseModel):
     signal_id: str
     account_id: Union[int, str]
@@ -336,15 +395,10 @@ class SessionRiskSnapshot(CustomBaseModel):
     symbol_trades_today: int = 0
     minutes_since_last_loss: Optional[float] = None
     minutes_since_last_symbol_trade: Optional[float] = None
+    open_orders_exposure: float = 0.0
+    margin_multiplier: float = 1.0
+    current_symbol_exposure: float = 0.0
+    current_total_exposure: float = 0.0
+    current_sector_exposure: float = 0.0
+    current_bucket_exposure: float = 0.0
     emergency_halt: bool = False
-    source: str = "database_agent"
-    generated_at: Optional[datetime.datetime] = None
-
-class Price(CustomBaseModel):
-    symbol: str
-    timestamp: datetime.datetime
-    open: Decimal
-    high: Decimal
-    low: Decimal
-    close: Decimal
-    volume: int
