@@ -35,6 +35,7 @@ def setup_position_bucket_columns(db) -> None:
             raise
         finally:
             cursor.close()
+    register_position_bucket_routes(db)
 
 
 def _row_to_dict(db, row) -> Optional[Dict[str, Any]]:
@@ -50,7 +51,6 @@ def _row_to_dict(db, row) -> Optional[Dict[str, Any]]:
 
 
 def enrich_positions_with_bucket_metadata(db, account_id: int, positions: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    setup_position_bucket_columns(db)
     symbols = [str(row.get("symbol") or "").upper() for row in positions or [] if row.get("symbol")]
     if not symbols:
         return list(positions or [])
@@ -83,16 +83,7 @@ def enrich_positions_with_bucket_metadata(db, account_id: int, positions: Iterab
     return enriched
 
 
-def upsert_position_bucket(
-    db,
-    account_id: int,
-    symbol: str,
-    strategy_bucket: str,
-    *,
-    source: str = "manual",
-    reason: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    setup_position_bucket_columns(db)
+def upsert_position_bucket(db, account_id: int, symbol: str, strategy_bucket: str, *, source: str = "manual", reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
     symbol = str(symbol or "").upper().strip()
     if not symbol:
         raise ValueError("symbol is required")
@@ -122,13 +113,7 @@ def upsert_position_bucket(
     return get_position_bucket(db, account_id, symbol)
 
 
-def bulk_upsert_position_buckets(
-    db,
-    account_id: int,
-    assignments: Iterable[Dict[str, Any]],
-    *,
-    default_source: str = "manual",
-) -> List[Dict[str, Any]]:
+def bulk_upsert_position_buckets(db, account_id: int, assignments: Iterable[Dict[str, Any]], *, default_source: str = "manual") -> List[Dict[str, Any]]:
     updated: List[Dict[str, Any]] = []
     for item in assignments or []:
         row = upsert_position_bucket(
@@ -145,7 +130,6 @@ def bulk_upsert_position_buckets(
 
 
 def get_position_bucket(db, account_id: int, symbol: str) -> Optional[Dict[str, Any]]:
-    setup_position_bucket_columns(db)
     p = _param(db)
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
@@ -157,7 +141,6 @@ def get_position_bucket(db, account_id: int, symbol: str) -> Optional[Dict[str, 
 
 
 def list_position_buckets(db, account_id: int) -> List[Dict[str, Any]]:
-    setup_position_bucket_columns(db)
     p = _param(db)
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
@@ -166,3 +149,77 @@ def list_position_buckets(db, account_id: int) -> List[Dict[str, Any]]:
             return [_row_to_dict(db, row) for row in cursor.fetchall()]
         finally:
             cursor.close()
+
+
+def _main_module():
+    import sys
+
+    return sys.modules.get("main") or sys.modules.get("__main__")
+
+
+def register_position_bucket_routes(db) -> None:
+    main_module = _main_module()
+    app = getattr(main_module, "app", None)
+    if app is None or getattr(app.state, "position_bucket_routes_registered", False):
+        return
+
+    wrap_response = getattr(main_module, "wrap_response", None)
+    if wrap_response is None:
+        def wrap_response(data=None, status="success", error=None):
+            return {"status": status, "agent_type": "database", "data": data, "error": error}
+
+    dependencies = []
+    get_api_key = getattr(main_module, "get_api_key", None)
+    if get_api_key is not None:
+        try:
+            from fastapi import Depends
+
+            dependencies = [Depends(get_api_key)]
+        except Exception:
+            dependencies = []
+
+    async def list_position_buckets_endpoint(account_id: int):
+        return wrap_response(data=list_position_buckets(db, account_id))
+
+    async def set_position_bucket_endpoint(account_id: int, symbol: str, payload: Dict[str, Any]):
+        row = upsert_position_bucket(
+            db,
+            account_id,
+            symbol,
+            payload.get("strategy_bucket") or payload.get("bucket") or UNASSIGNED,
+            source=payload.get("source") or "manual",
+            reason=payload.get("reason"),
+        )
+        if not row:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail=f"Position {symbol.upper()} not found for account {account_id}")
+        return wrap_response(data=row)
+
+    async def bulk_set_position_buckets_endpoint(account_id: int, payload: Dict[str, Any]):
+        assignments = payload.get("assignments") or []
+        updated = bulk_upsert_position_buckets(db, account_id, assignments, default_source=payload.get("source") or "manual")
+        return wrap_response(data={"updated": updated, "updated_count": len(updated), "requested_count": len(assignments)})
+
+    app.add_api_route(
+        "/accounts/{account_id}/position-buckets",
+        list_position_buckets_endpoint,
+        methods=["GET"],
+        dependencies=dependencies,
+        name="list_position_buckets_endpoint",
+    )
+    app.add_api_route(
+        "/accounts/{account_id}/position-buckets/{symbol}",
+        set_position_bucket_endpoint,
+        methods=["PATCH"],
+        dependencies=dependencies,
+        name="set_position_bucket_endpoint",
+    )
+    app.add_api_route(
+        "/accounts/{account_id}/position-buckets/bulk",
+        bulk_set_position_buckets_endpoint,
+        methods=["POST"],
+        dependencies=dependencies,
+        name="bulk_set_position_buckets_endpoint",
+    )
+    app.state.position_bucket_routes_registered = True
