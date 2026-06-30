@@ -6,11 +6,12 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List
 
+from position_bucket_repository import setup_position_bucket_columns
+
 try:
     from psycopg2.extras import Json as PgJson
 except Exception:  # pragma: no cover
     PgJson = None
-
 
 VALID_STRATEGY_BUCKETS = {"core_dividend", "value_rebound", "news_momentum", "unassigned"}
 UNASSIGNED = "unassigned"
@@ -59,24 +60,42 @@ def _strategy_bucket(item: Dict[str, Any]) -> str:
     return _normalize_strategy_bucket(raw)
 
 
-def _strategy_bucket_or_existing(item: Dict[str, Any], existing_bucket: Any) -> str:
+def _strategy_bucket_or_existing(item: Dict[str, Any], existing: Any) -> str:
     incoming_bucket = _strategy_bucket(item)
     if incoming_bucket != UNASSIGNED:
         return incoming_bucket
-    existing = _normalize_strategy_bucket(existing_bucket)
-    return existing if existing != UNASSIGNED else UNASSIGNED
+    if isinstance(existing, dict):
+        existing = existing.get("strategy_bucket")
+    existing_bucket = _normalize_strategy_bucket(existing)
+    return existing_bucket if existing_bucket != UNASSIGNED else UNASSIGNED
 
 
-def _existing_position_buckets(cursor, db, account_id: int) -> Dict[str, str]:
+def _strategy_bucket_source_or_existing(item: Dict[str, Any], existing: Any) -> str:
+    if _strategy_bucket(item) != UNASSIGNED:
+        return "broker_sync_payload"
+    if isinstance(existing, dict):
+        return str(existing.get("strategy_bucket_source") or "broker_sync_existing")
+    return "broker_sync"
+
+
+def _existing_position_buckets(cursor, db, account_id: int) -> Dict[str, Dict[str, Any]]:
     p = _param(db)
     try:
-        cursor.execute(f"SELECT symbol, strategy_bucket FROM positions WHERE account_id = {p}", (account_id,))
-        return {
-            str(row[0] if not isinstance(row, dict) else row.get("symbol") or "").upper(): _normalize_strategy_bucket(
-                row[1] if not isinstance(row, dict) else row.get("strategy_bucket")
-            )
-            for row in cursor.fetchall()
-        }
+        cursor.execute(
+            f"""
+            SELECT symbol, strategy_bucket, strategy_bucket_source, strategy_bucket_reason, strategy_bucket_updated_at
+            FROM positions WHERE account_id = {p}
+            """,
+            (account_id,),
+        )
+        output: Dict[str, Dict[str, Any]] = {}
+        for row in cursor.fetchall():
+            item = dict(row)
+            symbol = str(item.get("symbol") or "").upper()
+            if symbol:
+                item["strategy_bucket"] = _normalize_strategy_bucket(item.get("strategy_bucket"))
+                output[symbol] = item
+        return output
     except Exception:
         return {}
 
@@ -118,11 +137,8 @@ def _main_module():
 def _register_status_route(db) -> None:
     main_module = _main_module()
     app = getattr(main_module, "app", None)
-    if app is None:
+    if app is None or getattr(app.state, "broker_sync_routes_registered", False):
         return
-    if getattr(app.state, "broker_sync_routes_registered", False):
-        return
-
     from broker_sync_status_repository import broker_sync_status
 
     wrap_response = getattr(main_module, "wrap_response", None)
@@ -145,20 +161,8 @@ def _register_status_route(db) -> None:
     async def broker_sync_snapshot_endpoint(payload: Dict[str, Any]):
         return wrap_response(data=sync_broker_state(db, payload))
 
-    app.add_api_route(
-        "/broker-sync/status",
-        broker_sync_status_endpoint,
-        methods=["GET"],
-        dependencies=dependencies,
-        name="broker_sync_status_endpoint",
-    )
-    app.add_api_route(
-        "/broker-sync/snapshot",
-        broker_sync_snapshot_endpoint,
-        methods=["POST"],
-        dependencies=dependencies,
-        name="broker_sync_snapshot_endpoint",
-    )
+    app.add_api_route("/broker-sync/status", broker_sync_status_endpoint, methods=["GET"], dependencies=dependencies, name="broker_sync_status_endpoint")
+    app.add_api_route("/broker-sync/snapshot", broker_sync_snapshot_endpoint, methods=["POST"], dependencies=dependencies, name="broker_sync_snapshot_endpoint")
     app.state.broker_sync_status_route_registered = True
     app.state.broker_sync_snapshot_route_registered = True
     app.state.broker_sync_routes_registered = True
@@ -191,6 +195,9 @@ def setup_broker_sync_tables(db) -> None:
             db._add_column_if_not_exists(cursor, "positions", "current_market_price", "TEXT" if db.db_type == "sqlite" else "NUMERIC(18, 5)")
             db._add_column_if_not_exists(cursor, "positions", "market_value", "TEXT" if db.db_type == "sqlite" else "NUMERIC(18, 5)")
             db._add_column_if_not_exists(cursor, "positions", "strategy_bucket", "TEXT DEFAULT 'unassigned'")
+            db._add_column_if_not_exists(cursor, "positions", "strategy_bucket_source", "TEXT DEFAULT 'unknown'")
+            db._add_column_if_not_exists(cursor, "positions", "strategy_bucket_reason", "TEXT")
+            db._add_column_if_not_exists(cursor, "positions", "strategy_bucket_updated_at", timestamp_type)
             db._add_column_if_not_exists(cursor, "positions", "broker_synced_at", timestamp_type)
             conn.commit()
         except Exception:
@@ -198,6 +205,7 @@ def setup_broker_sync_tables(db) -> None:
             raise
         finally:
             cursor.close()
+    setup_position_bucket_columns(db)
     _register_status_route(db)
 
 
@@ -218,10 +226,7 @@ def _ensure_account(cursor, db, account_id: int, state: Dict[str, Any]) -> Decim
     if cursor.fetchone():
         cursor.execute(f"UPDATE accounts SET cash_balance = {p} WHERE account_id = {p}", (str(cash), account_id))
     else:
-        cursor.execute(
-            f"INSERT INTO accounts (account_id, account_name, cash_balance) VALUES ({p}, {p}, {p})",
-            (account_id, f"broker_account_{account_id}", str(cash)),
-        )
+        cursor.execute(f"INSERT INTO accounts (account_id, account_name, cash_balance) VALUES ({p}, {p}, {p})", (account_id, f"broker_account_{account_id}", str(cash)))
     return cash
 
 
@@ -239,13 +244,20 @@ def _replace_positions(cursor, db, account_id: int, positions: List[Dict[str, An
         average_cost = _decimal(item.get("avg_entry_price") or item.get("average_cost"))
         current_price = _decimal(item.get("current_price"), average_cost)
         market_value = _decimal(item.get("market_value"), Decimal(quantity) * current_price)
-        strategy_bucket = _strategy_bucket_or_existing(item, existing_buckets.get(symbol))
+        existing = existing_buckets.get(symbol, {})
+        strategy_bucket = _strategy_bucket_or_existing(item, existing)
+        strategy_bucket_source = _strategy_bucket_source_or_existing(item, existing)
+        strategy_bucket_reason = existing.get("strategy_bucket_reason") if isinstance(existing, dict) else None
+        strategy_bucket_updated_at = existing.get("strategy_bucket_updated_at") if isinstance(existing, dict) else None
         cursor.execute(
             f"""
-            INSERT INTO positions (account_id, symbol, quantity, average_cost, current_market_price, market_value, strategy_bucket, broker_synced_at)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+            INSERT INTO positions (
+                account_id, symbol, quantity, average_cost, current_market_price, market_value,
+                strategy_bucket, strategy_bucket_source, strategy_bucket_reason, strategy_bucket_updated_at, broker_synced_at
+            )
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
             """,
-            (account_id, symbol, quantity, str(average_cost), str(current_price), str(market_value), strategy_bucket, synced_at),
+            (account_id, symbol, quantity, str(average_cost), str(current_price), str(market_value), strategy_bucket, strategy_bucket_source, strategy_bucket_reason, strategy_bucket_updated_at, synced_at),
         )
         count += 1
     return count
@@ -329,16 +341,7 @@ def _insert_snapshot(cursor, db, account_id: int, state: Dict[str, Any]) -> None
         INSERT INTO broker_sync_snapshots (account_id, broker, paper, captured_at, account_payload, positions_payload, open_orders_payload, summary_payload)
         VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
         """,
-        (
-            account_id,
-            state.get("broker"),
-            bool(state.get("paper")),
-            state.get("captured_at") or _now(db),
-            _payload(state.get("account") or {}, db),
-            _payload(state.get("positions") or [], db),
-            _payload(state.get("open_orders") or [], db),
-            _payload(state.get("summary") or {}, db),
-        ),
+        (account_id, state.get("broker"), bool(state.get("paper")), state.get("captured_at") or _now(db), _payload(state.get("account") or {}, db), _payload(state.get("positions") or [], db), _payload(state.get("open_orders") or [], db), _payload(state.get("summary") or {}, db)),
     )
 
 
@@ -356,13 +359,7 @@ def sync_broker_state(db, broker_state: Dict[str, Any]) -> Dict[str, Any]:
             missing_marked = _mark_missing_orders(cursor, db, account_id, open_orders)
             _insert_snapshot(cursor, db, account_id, broker_state)
             conn.commit()
-            return {
-                "account_id": account_id,
-                "cash_balance": cash,
-                "positions_synced": positions_synced,
-                "open_orders_synced": open_orders_synced,
-                "missing_open_orders_marked_cancelled": missing_marked,
-            }
+            return {"account_id": account_id, "cash_balance": cash, "positions_synced": positions_synced, "open_orders_synced": open_orders_synced, "missing_open_orders_marked_cancelled": missing_marked}
         except Exception:
             conn.rollback()
             raise
