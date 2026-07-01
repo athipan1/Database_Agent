@@ -1,4 +1,10 @@
-from review_history_repository import create_review_history, get_review_history, list_review_history
+from review_history_repository import (
+    build_review_history_summary,
+    create_review_history,
+    get_latest_review_history_summary,
+    get_review_history,
+    list_review_history,
+)
 
 
 class FakeCursor:
@@ -52,7 +58,12 @@ class FakeCursor:
         elif "from review_decisions where review_run_id" in normalized:
             self.last_results = [row for row in self.decisions if row["review_run_id"] == params[0]]
         elif normalized.startswith("select * from review_runs"):
-            self.last_results = list(self.runs.values())
+            results = list(self.runs.values())
+            if "where" in normalized:
+                filters = list(params[:-1])
+                for value in filters:
+                    results = [row for row in results if value in (row["account_id"], row["bucket"])]
+            self.last_results = results[: int(params[-1])] if params else results
 
     def fetchone(self):
         return self.last_result
@@ -107,11 +118,19 @@ def sample_report():
         "bucket": "value_rebound",
         "mode": "BUCKET_PROFIT_REVIEW_REPORT_ONLY",
         "summary": {
+            "positions_seen": 4,
             "reviewed_positions": 2,
+            "database_bucket_hints_applied": 3,
+            "profit_agent_used": 2,
+            "risk_submissions": 2,
             "risk_approved": 2,
+            "risk_rejected": 0,
+            "execution_preview_submissions": 2,
             "execution_preview_ready": 2,
+            "execution_preview_blocked": 0,
+            "execution_submissions": 0,
         },
-        "safety": {"orders_submitted": False},
+        "safety": {"advisory_only": True, "orders_submitted": False},
         "reviewed_positions": [
             {
                 "symbol": "ACGL",
@@ -173,3 +192,31 @@ def test_get_and_list_review_history():
 
     assert fetched["review_run_id"] == "review-test-1"
     assert len(listed) == 1
+
+
+def test_build_review_history_summary_compacts_decisions():
+    db = FakeDB()
+    record = create_review_history(db, {"review_run_id": "review-test-1", "account_id": 1, "report": sample_report()})
+
+    summary = build_review_history_summary(record)
+
+    assert summary["latest_review_run_id"] == "review-test-1"
+    assert summary["reviewed_positions"] == 2
+    assert summary["orders_submitted"] is False
+    assert summary["final_decisions"] == {"HOLD": 2}
+    assert summary["profit_actions"] == {"hold": 2}
+    assert summary["risk_statuses"] == {"approved": 2}
+    assert summary["preview_statuses"] == {"ready": 2}
+    assert summary["decisions"][0]["symbol"] == "ACGL"
+
+
+def test_get_latest_review_history_summary():
+    db = FakeDB()
+    create_review_history(db, {"review_run_id": "review-test-1", "account_id": 1, "bucket": "value_rebound", "report": sample_report()})
+
+    summary = get_latest_review_history_summary(db, account_id="1", bucket="value_rebound")
+
+    assert summary["latest_review_run_id"] == "review-test-1"
+    assert summary["bucket"] == "value_rebound"
+    assert summary["risk_approved"] == 2
+    assert summary["execution_preview_ready"] == 2
