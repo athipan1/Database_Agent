@@ -6,6 +6,7 @@ from fastapi.security import APIKeyHeader
 
 from policy_review_models import CreatePolicyReviewAuditBody, ListPolicyReviewAuditsQuery
 from policy_review_repository import create_policy_review_audit, get_policy_review_audit, list_policy_review_audits
+from review_history_routes import create_review_history_routes
 
 
 def wrap_response(data: Any = None, status: str = "success", error: Optional[dict] = None):
@@ -83,4 +84,5 @@ def create_policy_review_routes(db, get_api_key_dependency, get_correlation_id_d
             raise HTTPException(status_code=404, detail=f"PolicyReview {policy_review_id} not found")
         return wrap_response(data=record)
 
+    router.include_router(create_review_history_routes(db, get_api_key_dependency, get_correlation_id_dependency))
     return router
