@@ -6,7 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
-from review_history_repository import create_review_history, get_review_history, list_review_history
+from review_history_repository import (
+    create_review_history,
+    get_latest_review_history_summary,
+    get_review_history,
+    list_review_history,
+)
 
 router = APIRouter()
 
@@ -65,6 +70,18 @@ def create_review_history_routes(db, get_api_key_dependency, get_correlation_id_
     ):
         records = list_review_history(db, account_id=account_id, bucket=bucket, limit=limit)
         return wrap_response(data=records)
+
+    @router.get("/review-history/latest", response_model=dict)
+    async def get_latest_review_history_summary_endpoint(
+        account_id: Optional[str] = None,
+        bucket: Optional[str] = None,
+        api_key: str = Depends(_api_key),
+        correlation_id: str = Depends(_correlation_id),
+    ):
+        record = get_latest_review_history_summary(db, account_id=account_id, bucket=bucket)
+        if not record:
+            raise HTTPException(status_code=404, detail="Latest review history summary not found")
+        return wrap_response(data=record)
 
     @router.get("/review-history/{review_run_id}", response_model=dict)
     async def get_review_history_endpoint(

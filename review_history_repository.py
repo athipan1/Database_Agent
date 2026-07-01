@@ -261,3 +261,70 @@ def list_review_history(db, account_id: Optional[str] = None, bucket: Optional[s
             return [item for item in (_format_run(row) for row in cursor.fetchall()) if item]
         finally:
             cursor.close()
+
+
+def _count_by(decisions: List[Dict[str, Any]], field: str) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for decision in decisions:
+        value = decision.get(field) or "unknown"
+        counts[str(value)] = counts.get(str(value), 0) + 1
+    return counts
+
+
+def build_review_history_summary(record: Dict[str, Any]) -> Dict[str, Any]:
+    decisions = record.get("decisions") or []
+    summary = record.get("summary") or {}
+    safety = record.get("safety") or {}
+    compact_decisions = [
+        {
+            "symbol": item.get("symbol"),
+            "profit_action": item.get("profit_action"),
+            "risk_status": item.get("risk_status"),
+            "preview_status": item.get("preview_status"),
+            "final_decision": item.get("final_decision"),
+            "reason": item.get("reason"),
+        }
+        for item in decisions
+    ]
+    return {
+        "latest_review_run_id": record.get("review_run_id"),
+        "account_id": record.get("account_id"),
+        "bucket": record.get("bucket"),
+        "mode": record.get("mode"),
+        "source": record.get("source"),
+        "status": record.get("status"),
+        "generated_at": record.get("generated_at"),
+        "created_at": record.get("created_at"),
+        "updated_at": record.get("updated_at"),
+        "positions_seen": summary.get("positions_seen", 0),
+        "reviewed_positions": summary.get("reviewed_positions", len(decisions)),
+        "database_bucket_hints_applied": summary.get("database_bucket_hints_applied", 0),
+        "profit_agent_used": summary.get("profit_agent_used", 0),
+        "risk_submissions": summary.get("risk_submissions", 0),
+        "risk_approved": summary.get("risk_approved", 0),
+        "risk_rejected": summary.get("risk_rejected", 0),
+        "execution_preview_submissions": summary.get("execution_preview_submissions", 0),
+        "execution_preview_ready": summary.get("execution_preview_ready", 0),
+        "execution_preview_blocked": summary.get("execution_preview_blocked", 0),
+        "execution_submissions": summary.get("execution_submissions", 0),
+        "orders_submitted": bool(safety.get("orders_submitted", False)),
+        "advisory_only": bool(safety.get("advisory_only", True)),
+        "final_decisions": _count_by(decisions, "final_decision"),
+        "profit_actions": _count_by(decisions, "profit_action"),
+        "risk_statuses": _count_by(decisions, "risk_status"),
+        "preview_statuses": _count_by(decisions, "preview_status"),
+        "decisions": compact_decisions,
+    }
+
+
+def get_latest_review_history_summary(db, account_id: Optional[str] = None, bucket: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    latest = list_review_history(db, account_id=account_id, bucket=bucket, limit=1)
+    if not latest:
+        return None
+    review_run_id = latest[0].get("review_run_id")
+    if not review_run_id:
+        return None
+    record = get_review_history(db, str(review_run_id))
+    if not record:
+        return None
+    return build_review_history_summary(record)
