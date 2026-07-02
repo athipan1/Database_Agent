@@ -13,7 +13,7 @@ try:
 except Exception:  # pragma: no cover
     PgJson = None
 
-VALID_STRATEGY_BUCKETS = {"core_dividend", "value_rebound", "news_momentum", "unassigned"}
+VALID_STRATEGY_BUCKETS = {"core_dividend", "quality_growth", "value_rebound", "news_momentum", "unassigned"}
 UNASSIGNED = "unassigned"
 
 
