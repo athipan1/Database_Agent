@@ -13,7 +13,7 @@ try:
 except Exception:  # pragma: no cover
     PgJson = None
 
-VALID_STRATEGY_BUCKETS = {"core_dividend", "value_rebound", "news_momentum", "unassigned"}
+VALID_STRATEGY_BUCKETS = {"core_dividend", "quality_growth", "value_rebound", "news_momentum", "unassigned"}
 UNASSIGNED = "unassigned"
 
 
@@ -179,26 +179,19 @@ def setup_broker_sync_tables(db) -> None:
                 CREATE TABLE IF NOT EXISTS broker_sync_snapshots (
                     snapshot_id {pk_type},
                     account_id INTEGER NOT NULL,
-                    broker TEXT,
-                    paper BOOLEAN,
-                    captured_at {timestamp_type},
-                    account_payload {json_type} NOT NULL,
-                    positions_payload {json_type} NOT NULL,
-                    open_orders_payload {json_type} NOT NULL,
-                    summary_payload {json_type} NOT NULL,
-                    created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
+                    synced_at {timestamp_type} NOT NULL,
+                    broker_name TEXT,
+                    raw_snapshot {json_type}
                 )
             """)
-            db._add_column_if_not_exists(cursor, "orders", "broker_synced_at", timestamp_type)
-            db._add_column_if_not_exists(cursor, "orders", "broker_status", "TEXT")
-            db._add_column_if_not_exists(cursor, "orders", "strategy_bucket", "TEXT DEFAULT 'unassigned'")
-            db._add_column_if_not_exists(cursor, "positions", "current_market_price", "TEXT" if db.db_type == "sqlite" else "NUMERIC(18, 5)")
-            db._add_column_if_not_exists(cursor, "positions", "market_value", "TEXT" if db.db_type == "sqlite" else "NUMERIC(18, 5)")
             db._add_column_if_not_exists(cursor, "positions", "strategy_bucket", "TEXT DEFAULT 'unassigned'")
             db._add_column_if_not_exists(cursor, "positions", "strategy_bucket_source", "TEXT DEFAULT 'unknown'")
             db._add_column_if_not_exists(cursor, "positions", "strategy_bucket_reason", "TEXT")
             db._add_column_if_not_exists(cursor, "positions", "strategy_bucket_updated_at", timestamp_type)
-            db._add_column_if_not_exists(cursor, "positions", "broker_synced_at", timestamp_type)
+            db._add_column_if_not_exists(cursor, "orders", "strategy_bucket", "TEXT DEFAULT 'unassigned'")
+            db._add_column_if_not_exists(cursor, "orders", "strategy_bucket_source", "TEXT DEFAULT 'unknown'")
+            db._add_column_if_not_exists(cursor, "orders", "strategy_bucket_reason", "TEXT")
+            db._add_column_if_not_exists(cursor, "orders", "strategy_bucket_updated_at", timestamp_type)
             conn.commit()
         except Exception:
             conn.rollback()
@@ -209,159 +202,106 @@ def setup_broker_sync_tables(db) -> None:
     _register_status_route(db)
 
 
-def _payload(value: Any, db) -> Any:
-    data = value or {}
-    if db.db_type == "sqlite":
-        return json.dumps(data, ensure_ascii=False, default=str)
-    if PgJson is not None:
-        return PgJson(data, dumps=lambda obj: json.dumps(obj, ensure_ascii=False, default=str))
-    return json.dumps(data, ensure_ascii=False, default=str)
-
-
-def _ensure_account(cursor, db, account_id: int, state: Dict[str, Any]) -> Decimal:
-    p = _param(db)
-    account = state.get("account") or {}
-    cash = _decimal(account.get("cash"))
-    cursor.execute(f"SELECT account_id FROM accounts WHERE account_id = {p}", (account_id,))
-    if cursor.fetchone():
-        cursor.execute(f"UPDATE accounts SET cash_balance = {p} WHERE account_id = {p}", (str(cash), account_id))
-    else:
-        cursor.execute(f"INSERT INTO accounts (account_id, account_name, cash_balance) VALUES ({p}, {p}, {p})", (account_id, f"broker_account_{account_id}", str(cash)))
-    return cash
-
-
-def _replace_positions(cursor, db, account_id: int, positions: List[Dict[str, Any]]) -> int:
-    p = _param(db)
+def sync_broker_state(db, payload: Dict[str, Any]) -> Dict[str, Any]:
+    account_id = int(payload.get("account_id") or 1)
+    broker_name = str(payload.get("broker_name") or payload.get("broker") or "alpaca")
+    positions = payload.get("positions") or []
+    orders = payload.get("orders") or []
     synced_at = _now(db)
-    existing_buckets = _existing_position_buckets(cursor, db, account_id)
-    cursor.execute(f"DELETE FROM positions WHERE account_id = {p}", (account_id,))
-    count = 0
-    for item in positions or []:
-        symbol = str(item.get("symbol") or "").upper()
-        if not symbol:
-            continue
-        quantity = _qty(item.get("qty") or item.get("quantity"))
-        average_cost = _decimal(item.get("avg_entry_price") or item.get("average_cost"))
-        current_price = _decimal(item.get("current_price"), average_cost)
-        market_value = _decimal(item.get("market_value"), Decimal(quantity) * current_price)
-        existing = existing_buckets.get(symbol, {})
-        strategy_bucket = _strategy_bucket_or_existing(item, existing)
-        strategy_bucket_source = _strategy_bucket_source_or_existing(item, existing)
-        strategy_bucket_reason = existing.get("strategy_bucket_reason") if isinstance(existing, dict) else None
-        strategy_bucket_updated_at = existing.get("strategy_bucket_updated_at") if isinstance(existing, dict) else None
-        cursor.execute(
-            f"""
-            INSERT INTO positions (
-                account_id, symbol, quantity, average_cost, current_market_price, market_value,
-                strategy_bucket, strategy_bucket_source, strategy_bucket_reason, strategy_bucket_updated_at, broker_synced_at
-            )
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
-            """,
-            (account_id, symbol, quantity, str(average_cost), str(current_price), str(market_value), strategy_bucket, strategy_bucket_source, strategy_bucket_reason, strategy_bucket_updated_at, synced_at),
-        )
-        count += 1
-    return count
-
-
-def _sync_open_orders(cursor, db, account_id: int, rows: List[Dict[str, Any]]) -> int:
     p = _param(db)
-    synced_at = _now(db)
-    count = 0
-    for item in rows or []:
-        broker_id = item.get("id") or item.get("broker_order_id")
-        symbol = str(item.get("symbol") or "").upper()
-        if not broker_id or not symbol:
-            continue
-        side = str(item.get("side") or "buy").lower()
-        quantity = _qty(item.get("qty") or item.get("quantity"))
-        kind = str(item.get("type") or item.get("order_type") or "market").lower()
-        tif = str(item.get("time_in_force") or "day")
-        price = item.get("limit_price") or item.get("stop_price") or item.get("price")
-        state = _status(item.get("status"))
-        raw_state = str(item.get("status") or "")
-        filled = _qty(item.get("filled_qty") or item.get("executed_quantity"))
-        submitted_at = item.get("submitted_at") or synced_at
-        existing_bucket = _existing_order_bucket(cursor, db, str(broker_id))
-        strategy_bucket = _strategy_bucket_or_existing(item, existing_bucket)
-        cursor.execute(f"SELECT order_id FROM orders WHERE broker_order_id = {p}", (str(broker_id),))
-        if cursor.fetchone():
-            cursor.execute(
-                f"""
-                UPDATE orders
-                SET symbol = {p}, side = {p}, order_type = {p}, quantity = {p}, price = {p}, time_in_force = {p},
-                    status = {p}, broker_status = {p}, executed_quantity = {p}, strategy_bucket = {p}, broker_synced_at = {p}
-                WHERE broker_order_id = {p}
-                """,
-                (symbol, side, kind, quantity, str(price) if price is not None else None, tif, state, raw_state, filled, strategy_bucket, synced_at, str(broker_id)),
-            )
-        else:
-            trade_id = f"broker:{broker_id}"
-            cursor.execute(
-                f"""
-                INSERT INTO orders (account_id, trade_id, symbol, side, order_type, quantity, price, time_in_force, status, broker_order_id, broker_status, executed_quantity, strategy_bucket, timestamp, broker_synced_at)
-                VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
-                """,
-                (account_id, trade_id, symbol, side, kind, quantity, str(price) if price is not None else None, tif, state, str(broker_id), raw_state, filled, strategy_bucket, submitted_at, synced_at),
-            )
-        count += 1
-    return count
-
-
-def _mark_missing_orders(cursor, db, account_id: int, rows: List[Dict[str, Any]]) -> int:
-    p = _param(db)
-    ids = [str(item.get("id") or item.get("broker_order_id")) for item in (rows or []) if item.get("id") or item.get("broker_order_id")]
-    if ids:
-        placeholders = ",".join([p] * len(ids))
-        params = ["cancelled", "missing_from_broker_sync", account_id, *ids]
-        cursor.execute(
-            f"""
-            UPDATE orders SET status = {p}, reason = {p}
-            WHERE account_id = {p} AND broker_order_id IS NOT NULL
-              AND status IN ('pending', 'placed', 'partially_filled')
-              AND broker_order_id NOT IN ({placeholders})
-            """,
-            tuple(params),
-        )
-    else:
-        cursor.execute(
-            f"""
-            UPDATE orders SET status = {p}, reason = {p}
-            WHERE account_id = {p} AND broker_order_id IS NOT NULL
-              AND status IN ('pending', 'placed', 'partially_filled')
-            """,
-            ("cancelled", "missing_from_broker_sync", account_id),
-        )
-    return cursor.rowcount if cursor.rowcount is not None else 0
-
-
-def _insert_snapshot(cursor, db, account_id: int, state: Dict[str, Any]) -> None:
-    p = _param(db)
-    cursor.execute(
-        f"""
-        INSERT INTO broker_sync_snapshots (account_id, broker, paper, captured_at, account_payload, positions_payload, open_orders_payload, summary_payload)
-        VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
-        """,
-        (account_id, state.get("broker"), bool(state.get("paper")), state.get("captured_at") or _now(db), _payload(state.get("account") or {}, db), _payload(state.get("positions") or [], db), _payload(state.get("open_orders") or [], db), _payload(state.get("summary") or {}, db)),
-    )
-
-
-def sync_broker_state(db, broker_state: Dict[str, Any]) -> Dict[str, Any]:
-    setup_broker_sync_tables(db)
-    account_id = int(broker_state.get("account_id") or 1)
-    positions = broker_state.get("positions") or []
-    open_orders = broker_state.get("open_orders") or []
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
         try:
-            cash = _ensure_account(cursor, db, account_id, broker_state)
-            positions_synced = _replace_positions(cursor, db, account_id, positions)
-            open_orders_synced = _sync_open_orders(cursor, db, account_id, open_orders)
-            missing_marked = _mark_missing_orders(cursor, db, account_id, open_orders)
-            _insert_snapshot(cursor, db, account_id, broker_state)
+            existing_buckets = _existing_position_buckets(cursor, db, account_id)
+            cursor.execute(
+                f"INSERT INTO broker_sync_snapshots (account_id, synced_at, broker_name, raw_snapshot) VALUES ({p}, {p}, {p}, {p})",
+                (account_id, synced_at, broker_name, json.dumps(payload) if db.db_type == "sqlite" or PgJson is None else PgJson(payload)),
+            )
+            for item in positions:
+                if not isinstance(item, dict):
+                    continue
+                symbol = str(item.get("symbol") or "").upper()
+                if not symbol:
+                    continue
+                existing = existing_buckets.get(symbol) or {}
+                bucket = _strategy_bucket_or_existing(item, existing)
+                bucket_source = _strategy_bucket_source_or_existing(item, existing)
+                cursor.execute(
+                    f"""
+                    INSERT INTO positions (account_id, symbol, quantity, average_cost, current_market_price, market_value, updated_at, strategy_bucket, strategy_bucket_source, strategy_bucket_reason, strategy_bucket_updated_at)
+                    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+                    ON CONFLICT(account_id, symbol) DO UPDATE SET
+                        quantity = excluded.quantity,
+                        average_cost = excluded.average_cost,
+                        current_market_price = excluded.current_market_price,
+                        market_value = excluded.market_value,
+                        updated_at = excluded.updated_at,
+                        strategy_bucket = excluded.strategy_bucket,
+                        strategy_bucket_source = excluded.strategy_bucket_source,
+                        strategy_bucket_reason = excluded.strategy_bucket_reason,
+                        strategy_bucket_updated_at = excluded.strategy_bucket_updated_at
+                    """,
+                    (
+                        account_id,
+                        symbol,
+                        _qty(item.get("qty") or item.get("quantity")),
+                        _decimal(item.get("avg_entry_price") or item.get("average_cost") or item.get("average_entry_price")),
+                        _decimal(item.get("current_price") or item.get("current_market_price") or item.get("market_price")),
+                        _decimal(item.get("market_value")),
+                        synced_at,
+                        bucket,
+                        bucket_source,
+                        item.get("strategy_bucket_reason") or item.get("bucket_reason"),
+                        synced_at,
+                    ),
+                )
+            for item in orders:
+                if not isinstance(item, dict):
+                    continue
+                broker_id = str(item.get("id") or item.get("order_id") or item.get("broker_order_id") or "")
+                if not broker_id:
+                    continue
+                bucket = _strategy_bucket(item)
+                if bucket == UNASSIGNED:
+                    bucket = _existing_order_bucket(cursor, db, broker_id)
+                cursor.execute(
+                    f"""
+                    INSERT INTO orders (account_id, broker_order_id, symbol, side, order_type, quantity, price, status, created_at, updated_at, strategy_bucket, strategy_bucket_source, strategy_bucket_reason, strategy_bucket_updated_at)
+                    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+                    ON CONFLICT(broker_order_id) DO UPDATE SET
+                        symbol = excluded.symbol,
+                        side = excluded.side,
+                        order_type = excluded.order_type,
+                        quantity = excluded.quantity,
+                        price = excluded.price,
+                        status = excluded.status,
+                        updated_at = excluded.updated_at,
+                        strategy_bucket = excluded.strategy_bucket,
+                        strategy_bucket_source = excluded.strategy_bucket_source,
+                        strategy_bucket_reason = excluded.strategy_bucket_reason,
+                        strategy_bucket_updated_at = excluded.strategy_bucket_updated_at
+                    """,
+                    (
+                        account_id,
+                        broker_id,
+                        str(item.get("symbol") or "").upper(),
+                        str(item.get("side") or ""),
+                        str(item.get("type") or item.get("order_type") or ""),
+                        _qty(item.get("qty") or item.get("quantity")),
+                        _decimal(item.get("limit_price") or item.get("price") or item.get("stop_price")),
+                        _status(item.get("status")),
+                        item.get("created_at") or synced_at,
+                        synced_at,
+                        bucket,
+                        "broker_sync_payload" if bucket != UNASSIGNED else "broker_sync",
+                        item.get("strategy_bucket_reason") or item.get("bucket_reason"),
+                        synced_at,
+                    ),
+                )
             conn.commit()
-            return {"account_id": account_id, "cash_balance": cash, "positions_synced": positions_synced, "open_orders_synced": open_orders_synced, "missing_open_orders_marked_cancelled": missing_marked}
-        except Exception:
+            return {"status": "success", "account_id": account_id, "positions_synced": len(positions), "orders_synced": len(orders)}
+        except Exception as exc:
             conn.rollback()
-            raise
+            return {"status": "error", "error": str(exc)}
         finally:
             cursor.close()
