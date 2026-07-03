@@ -4,10 +4,12 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Security
 from fastapi.security import APIKeyHeader
 
-from order_review_ticket_routes import create_order_review_ticket_routes
-from policy_review_models import CreatePolicyReviewAuditBody, ListPolicyReviewAuditsQuery
-from policy_review_repository import create_policy_review_audit, get_policy_review_audit, list_policy_review_audits
-from review_history_routes import create_review_history_routes
+from order_review_ticket_models import CreateOrderReviewTicketBody, ListOrderReviewTicketsQuery
+from order_review_ticket_repository import (
+    create_order_review_ticket_audit,
+    get_order_review_ticket_audit,
+    list_order_review_ticket_audits,
+)
 
 
 def wrap_response(data: Any = None, status: str = "success", error: Optional[dict] = None):
@@ -22,7 +24,7 @@ def wrap_response(data: Any = None, status: str = "success", error: Optional[dic
     }
 
 
-def create_policy_review_routes(db, get_api_key_dependency, get_correlation_id_dependency):
+def create_order_review_ticket_routes(db, get_api_key_dependency, get_correlation_id_dependency):
     router = APIRouter()
     api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
@@ -32,26 +34,28 @@ def create_policy_review_routes(db, get_api_key_dependency, get_correlation_id_d
     async def _correlation_id():
         return await get_correlation_id_dependency()
 
-    @router.post("/policy-reviews", response_model=dict)
-    async def create_policy_review_endpoint(
-        body: CreatePolicyReviewAuditBody,
+    @router.post("/order-review-tickets", response_model=dict)
+    async def create_order_review_ticket_endpoint(
+        body: CreateOrderReviewTicketBody,
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
         try:
-            record = create_policy_review_audit(db, body)
+            if body.correlation_id is None:
+                body.correlation_id = correlation_id
+            record = create_order_review_ticket_audit(db, body)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
         return wrap_response(data=record)
 
-    @router.get("/policy-reviews", response_model=dict)
-    async def list_policy_reviews_endpoint(
+    @router.get("/order-review-tickets", response_model=dict)
+    async def list_order_review_tickets_endpoint(
         account_id: Optional[str] = None,
-        symbol: Optional[str] = None,
+        ticket_id: Optional[str] = None,
         status: Optional[str] = None,
         source: Optional[str] = None,
-        advisory_only: Optional[bool] = None,
-        auto_apply: Optional[bool] = None,
+        approval_required: Optional[bool] = None,
+        execution_enabled: Optional[bool] = None,
         limit: int = Query(default=100, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
         sort: str = Query(default="updated_at", pattern="^(created_at|updated_at)$"),
@@ -59,32 +63,30 @@ def create_policy_review_routes(db, get_api_key_dependency, get_correlation_id_d
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
-        query = ListPolicyReviewAuditsQuery(
+        query = ListOrderReviewTicketsQuery(
             account_id=account_id,
-            symbol=symbol,
+            ticket_id=ticket_id,
             status=status,
             source=source,
-            advisory_only=advisory_only,
-            auto_apply=auto_apply,
+            approval_required=approval_required,
+            execution_enabled=execution_enabled,
             limit=limit,
             offset=offset,
             sort=sort,
             order=order,
         )
-        records = list_policy_review_audits(db, query)
+        records = list_order_review_ticket_audits(db, query)
         return wrap_response(data=records)
 
-    @router.get("/policy-reviews/{policy_review_id}", response_model=dict)
-    async def get_policy_review_endpoint(
-        policy_review_id: str,
+    @router.get("/order-review-tickets/{ticket_id}", response_model=dict)
+    async def get_order_review_ticket_endpoint(
+        ticket_id: str,
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
-        record = get_policy_review_audit(db, policy_review_id)
+        record = get_order_review_ticket_audit(db, ticket_id)
         if not record:
-            raise HTTPException(status_code=404, detail=f"PolicyReview {policy_review_id} not found")
+            raise HTTPException(status_code=404, detail=f"OrderReviewTicket {ticket_id} not found")
         return wrap_response(data=record)
 
-    router.include_router(create_review_history_routes(db, get_api_key_dependency, get_correlation_id_dependency))
-    router.include_router(create_order_review_ticket_routes(db, get_api_key_dependency, get_correlation_id_dependency))
     return router
