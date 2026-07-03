@@ -10,6 +10,7 @@ from order_review_ticket_repository import (
     get_order_review_ticket_audit,
     list_order_review_ticket_audits,
 )
+from order_review_ticket_summary import get_latest_order_review_ticket_audit, get_order_review_ticket_summary
 
 
 def wrap_response(data: Any = None, status: str = "success", error: Optional[dict] = None):
@@ -77,6 +78,34 @@ def create_order_review_ticket_routes(db, get_api_key_dependency, get_correlatio
         )
         records = list_order_review_ticket_audits(db, query)
         return wrap_response(data=records)
+
+    @router.get("/order-review-tickets/latest", response_model=dict)
+    async def latest_order_review_ticket_endpoint(
+        account_id: Optional[str] = None,
+        source: Optional[str] = None,
+        api_key: str = Depends(_api_key),
+        correlation_id: str = Depends(_correlation_id),
+    ):
+        record = get_latest_order_review_ticket_audit(db, account_id=account_id, source=source)
+        if not record:
+            raise HTTPException(status_code=404, detail="No OrderReviewTicket records found")
+        return wrap_response(data=record)
+
+    @router.get("/order-review-tickets/summary", response_model=dict)
+    async def order_review_ticket_summary_endpoint(
+        account_id: Optional[str] = None,
+        source: Optional[str] = None,
+        latest_ticket_id: Optional[str] = None,
+        api_key: str = Depends(_api_key),
+        correlation_id: str = Depends(_correlation_id),
+    ):
+        summary = get_order_review_ticket_summary(
+            db,
+            account_id=account_id,
+            source=source,
+            latest_ticket_id=latest_ticket_id,
+        )
+        return wrap_response(data=summary)
 
     @router.get("/order-review-tickets/{ticket_id}", response_model=dict)
     async def get_order_review_ticket_endpoint(
