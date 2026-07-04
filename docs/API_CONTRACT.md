@@ -66,7 +66,7 @@ Every response should use this envelope:
 
 ## Required Operational Endpoints
 
-The target operational endpoint set is:
+The operational endpoint set is:
 
 ```http
 GET /health
@@ -76,8 +76,9 @@ GET /version
 
 Current baseline:
 
-- `/health` exists and reports database connectivity, dev mode, trading mode, and emergency halt state.
-- `/ready` and `/version` are the next implementation targets for this agent.
+- `/health` reports database connectivity, dev mode, trading mode, and emergency halt state.
+- `/ready` reports runtime readiness, trading mode, dev mode, emergency halt state, API key configuration, and live/dev-mode violations.
+- `/version` reports agent version, schema version, and API contract metadata.
 
 ## Safety Rules
 
@@ -90,7 +91,7 @@ Current baseline:
 ## Rollout Plan
 
 1. Add schema fields to `StandardAgentResponse`.
-2. Ensure response helpers include the standard envelope fields.
-3. Add `/ready` and `/version` endpoints.
+2. Add runtime `/ready` and `/version` endpoints.
+3. Ensure response helpers include `schema_version`, `correlation_id`, and `metadata`.
 4. Add API contract tests.
 5. Expand contract tests around write endpoints such as risk approvals, execution jobs, fills, and broker sync.
