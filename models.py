@@ -12,7 +12,6 @@ import datetime
 
 DEFAULT_SCHEMA_VERSION = "1.0"
 
-
 class OrderSide(str, Enum):
 
     BUY = "buy"
@@ -278,3 +277,377 @@ class Order(CustomBaseModel):
     broker_status: Optional[str] = None
 
     reason: Optional[str] = None
+
+    executed_quantity: int = 0
+
+    avg_execution_price: Optional[Decimal] = None
+
+    executed_at: Optional[datetime.datetime] = None
+
+    client_order_id: Optional[Union[UUID, str]] = None
+
+    failure_reason: Optional[str] = None
+
+    timestamp: Optional[datetime.datetime] = None
+
+    broker_synced_at: Optional[datetime.datetime] = None
+
+class CreateOrderBody(CustomBaseModel):
+
+    trade_id: Union[int, str] = Field(..., description="Globally unique trade ID")
+
+    account_id: Union[int, str]
+
+    symbol: str
+
+    side: OrderSide
+
+    order_type: OrderType
+
+    price: Optional[Decimal] = None
+
+    quantity: int
+
+    time_in_force: TimeInForce = TimeInForce.GTC
+
+    risk_approval_id: Optional[str] = None
+
+    final_quantity: Optional[int] = Field(default=None, gt=0)
+
+    guard_plan: Optional[Dict[str, Any]] = None
+
+    protective_exit: Optional[Dict[str, Any]] = None
+
+    client_order_id: Optional[Union[UUID, str]] = None
+
+class CreateOrderResponse(CustomBaseModel):
+
+    order_id: int
+
+    trade_id: Union[int, str]
+
+    account_id: Union[int, str]
+
+    status: OrderStatus
+
+    client_order_id: Optional[Union[UUID, str]] = None
+
+    reason: Optional[str] = None
+
+class OrderExecutionResponse(CustomBaseModel):
+
+    order_id: int
+
+    trade_id: Optional[Union[int, str]] = None
+
+    account_id: Union[int, str]
+
+    status: OrderStatus
+
+    reason: Optional[str] = None
+
+class ExecutionJob(CustomBaseModel):
+
+    job_id: Union[int, str]
+
+    order_id: int
+
+    trade_id: Union[int, str]
+
+    status: ExecutionJobStatus = ExecutionJobStatus.QUEUED
+
+    attempts: int = 0
+
+    max_attempts: int = 3
+
+    last_error: Optional[str] = None
+
+    created_at: Optional[datetime.datetime] = None
+
+    updated_at: Optional[datetime.datetime] = None
+
+class CreateExecutionJobBody(CustomBaseModel):
+
+    order_id: int
+
+    trade_id: Union[int, str]
+
+    max_attempts: int = Field(default=3, gt=0)
+
+class ExecutionTrade(CustomBaseModel):
+
+    trade_id: Union[int, str]
+
+    account_id: Union[int, str]
+
+    asset_id: Optional[str] = None
+
+    symbol: str
+
+    side: str
+
+    quantity: int
+
+    price: Decimal
+
+    notional: Decimal
+
+    executed_at: datetime.datetime
+
+    source_agent: Optional[str] = None
+
+class FillRecord(CustomBaseModel):
+
+    fill_id: int
+
+    account_id: Union[int, str]
+
+    order_id: Optional[int] = None
+
+    trade_id: Optional[Union[int, str]] = None
+
+    symbol: str
+
+    side: str
+
+    quantity: int
+
+    fill_price: Decimal
+
+    average_entry_price: Optional[Decimal] = None
+
+    gross_pnl: Decimal = Decimal("0")
+
+    fees: Decimal = Decimal("0")
+
+    realized_pnl: Decimal = Decimal("0")
+
+    broker_fill_id: Optional[str] = None
+
+    broker_order_id: Optional[str] = None
+
+    liquidity: Optional[str] = None
+
+    filled_at: datetime.datetime
+
+    correlation_id: Optional[str] = None
+
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    created_at: Optional[datetime.datetime] = None
+
+class CreateFillBody(CustomBaseModel):
+
+    order_id: Optional[int] = None
+
+    trade_id: Optional[Union[int, str]] = None
+
+    symbol: str
+
+    side: OrderSide
+
+    quantity: int = Field(gt=0)
+
+    fill_price: Decimal = Field(gt=0)
+
+    average_entry_price: Optional[Decimal] = Field(default=None, gt=0)
+
+    fees: Decimal = Decimal("0")
+
+    realized_pnl: Optional[Decimal] = None
+
+    broker_fill_id: Optional[str] = None
+
+    broker_order_id: Optional[str] = None
+
+    liquidity: Optional[str] = None
+
+    filled_at: Optional[datetime.datetime] = None
+
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class RiskApproval(CustomBaseModel):
+
+    approval_id: str
+
+    account_id: Union[int, str]
+
+    symbol: str
+
+    side: OrderSide
+
+    approved_quantity: int
+
+    status: RiskApprovalStatus = RiskApprovalStatus.APPROVED
+
+    expires_at: datetime.datetime
+
+    created_at: Optional[datetime.datetime] = None
+
+    used_at: Optional[datetime.datetime] = None
+
+    order_id: Optional[int] = None
+
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class CreateRiskApprovalBody(CustomBaseModel):
+
+    approval_id: str
+
+    account_id: Union[int, str]
+
+    symbol: str
+
+    side: OrderSide
+
+    approved_quantity: int = Field(gt=0)
+
+    expires_at: datetime.datetime
+
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class MarkRiskApprovalUsedBody(CustomBaseModel):
+
+    order_id: int
+
+class RevokeRiskApprovalBody(CustomBaseModel):
+
+    reason: str = "manual_revoke"
+
+class SignalHistory(CustomBaseModel):
+
+    signal_id: str
+
+    account_id: Union[int, str]
+
+    symbol: str
+
+    timestamp: datetime.datetime
+
+    source_agent: str = "manager-agent"
+
+    candidate_score: Optional[float] = None
+
+    technical_score: Optional[float] = None
+
+    fundamental_score: Optional[float] = None
+
+    final_verdict: Optional[str] = None
+
+    market_regime: Optional[str] = None
+
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class CreateSignalHistoryBody(CustomBaseModel):
+
+    signal_id: Optional[str] = None
+
+    account_id: Union[int, str]
+
+    symbol: str
+
+    source_agent: str = "manager-agent"
+
+    candidate_score: Optional[float] = None
+
+    technical_score: Optional[float] = None
+
+    fundamental_score: Optional[float] = None
+
+    final_verdict: Optional[str] = None
+
+    market_regime: Optional[str] = None
+
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class PerformanceMetric(CustomBaseModel):
+
+    metric_id: str
+
+    account_id: Union[int, str]
+
+    symbol: str
+
+    timestamp: datetime.datetime
+
+    source_agent: str = "learning-agent"
+
+    entry_price: Optional[Decimal] = None
+
+    exit_price: Optional[Decimal] = None
+
+    current_price: Optional[Decimal] = None
+
+    return_pct: Optional[float] = None
+
+    holding_days: Optional[int] = None
+
+    outcome: Optional[str] = None
+
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class CreatePerformanceMetricBody(CustomBaseModel):
+
+    metric_id: Optional[str] = None
+
+    account_id: Union[int, str]
+
+    symbol: str
+
+    source_agent: str = "learning-agent"
+
+    entry_price: Optional[Decimal] = None
+
+    exit_price: Optional[Decimal] = None
+
+    current_price: Optional[Decimal] = None
+
+    return_pct: Optional[float] = None
+
+    holding_days: Optional[int] = None
+
+    outcome: Optional[str] = None
+
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class SessionRiskSnapshot(CustomBaseModel):
+
+    account_id: Union[int, str]
+
+    symbol: Optional[str] = None
+
+    daily_realized_pnl: float = 0.0
+
+    weekly_realized_pnl: float = 0.0
+
+    consecutive_losses: int = 0
+
+    trades_today: int = 0
+
+    symbol_trades_today: int = 0
+
+    minutes_since_last_loss: Optional[float] = None
+
+    minutes_since_last_symbol_trade: Optional[float] = None
+
+    emergency_halt: bool = False
+
+    source: str = "database_agent"
+
+    generated_at: Optional[datetime.datetime] = None
+
+class Price(CustomBaseModel):
+
+    symbol: str
+
+    timestamp: datetime.datetime
+
+    open: Decimal
+
+    high: Decimal
+
+    low: Decimal
+
+    close: Decimal
+
+    volume: int
