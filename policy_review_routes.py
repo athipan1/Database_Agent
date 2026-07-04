@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -9,6 +10,13 @@ from policy_review_models import CreatePolicyReviewAuditBody, ListPolicyReviewAu
 from policy_review_repository import create_policy_review_audit, get_policy_review_audit, list_policy_review_audits
 from review_history_routes import create_review_history_routes
 from system_contract_routes import create_system_contract_routes
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 def wrap_response(
@@ -44,10 +52,10 @@ def create_policy_review_routes(db, get_api_key_dependency, get_correlation_id_d
 
     router.include_router(
         create_system_contract_routes(
-            trading_mode=getattr(db, "trading_mode", "PAPER"),
-            database_dev_mode=False,
-            database_emergency_halt=False,
-            database_agent_api_key_configured=True,
+            trading_mode=os.getenv("TRADING_MODE", "PAPER").strip().upper(),
+            database_dev_mode=_env_bool("DATABASE_DEV_MODE", False),
+            database_emergency_halt=_env_bool("DATABASE_EMERGENCY_HALT", False),
+            database_agent_api_key_configured=bool(os.getenv("DATABASE_AGENT_API_KEY")),
             get_correlation_id_dependency=get_correlation_id_dependency,
         )
     )
