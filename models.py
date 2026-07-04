@@ -10,6 +10,8 @@ from enum import Enum
 
 import datetime
 
+DEFAULT_SCHEMA_VERSION = "1.0"
+
 class OrderSide(str, Enum):
 
     BUY = "buy"
@@ -92,15 +94,33 @@ class StandardAgentResponse(CustomBaseModel, Generic[T]):
 
     agent_type: str = "database"
 
-    version: str = "1.0.0"
+    version: str = "1.1.0"
+
+    schema_version: str = DEFAULT_SCHEMA_VERSION
 
     timestamp: datetime.datetime
 
+    correlation_id: Optional[str] = None
+
     data: Optional[T] = None
+
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
     error: Optional[dict] = None
 
     confidence_score: Optional[float] = None
+
+    @field_validator("schema_version")
+    @classmethod
+    def schema_version_must_be_semantic(cls, value):
+
+        parts = value.split(".")
+
+        if not all(part.isdigit() for part in parts):
+
+            raise ValueError('Schema version must be in semantic format (e.g., "1.0")')
+
+        return value
 
 class AccountBalance(CustomBaseModel):
 
