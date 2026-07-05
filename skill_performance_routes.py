@@ -12,6 +12,7 @@ from skill_performance_repository import (
     create_skill_trade_outcome,
     list_skill_execution_logs,
     rank_skill_performance,
+    setup_skill_performance_tables,
 )
 
 
@@ -46,6 +47,9 @@ def create_skill_performance_routes(db, get_api_key_dependency, get_correlation_
     async def _correlation_id():
         return await get_correlation_id_dependency()
 
+    def _ensure_tables_ready() -> None:
+        setup_skill_performance_tables(db)
+
     @router.post("/execution-logs", response_model=dict)
     async def create_skill_execution_log_endpoint(
         body: CreateSkillExecutionLogBody,
@@ -53,6 +57,7 @@ def create_skill_performance_routes(db, get_api_key_dependency, get_correlation_
         correlation_id: str = Depends(_correlation_id),
     ):
         try:
+            _ensure_tables_ready()
             metadata = dict(body.metadata or {})
             metadata.setdefault("correlation_id", correlation_id)
             body.metadata = metadata
@@ -77,6 +82,7 @@ def create_skill_performance_routes(db, get_api_key_dependency, get_correlation_
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
+        _ensure_tables_ready()
         records = list_skill_execution_logs(
             db,
             skill_id=skill_id,
@@ -99,6 +105,7 @@ def create_skill_performance_routes(db, get_api_key_dependency, get_correlation_
         correlation_id: str = Depends(_correlation_id),
     ):
         try:
+            _ensure_tables_ready()
             metadata = dict(body.metadata or {})
             metadata.setdefault("correlation_id", correlation_id)
             body.metadata = metadata
@@ -121,6 +128,7 @@ def create_skill_performance_routes(db, get_api_key_dependency, get_correlation_
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
+        _ensure_tables_ready()
         records = rank_skill_performance(
             db,
             account_id=account_id,
@@ -149,6 +157,7 @@ def create_skill_performance_routes(db, get_api_key_dependency, get_correlation_
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
+        _ensure_tables_ready()
         records = rank_skill_performance(
             db,
             account_id=account_id,
