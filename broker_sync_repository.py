@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any, Dict, List
 
 from position_bucket_repository import setup_position_bucket_columns
+from skill_trade_outcome_repository import create_skill_trade_outcome, setup_skill_trade_outcome_table
 
 try:
     from psycopg2.extras import Json as PgJson
@@ -161,10 +162,15 @@ def _register_status_route(db) -> None:
     async def broker_sync_snapshot_endpoint(payload: Dict[str, Any]):
         return wrap_response(data=sync_broker_state(db, payload))
 
+    async def skill_trade_outcome_endpoint(payload: Dict[str, Any]):
+        return wrap_response(data=create_skill_trade_outcome(db, payload))
+
     app.add_api_route("/broker-sync/status", broker_sync_status_endpoint, methods=["GET"], dependencies=dependencies, name="broker_sync_status_endpoint")
     app.add_api_route("/broker-sync/snapshot", broker_sync_snapshot_endpoint, methods=["POST"], dependencies=dependencies, name="broker_sync_snapshot_endpoint")
+    app.add_api_route("/skills/trade-outcomes", skill_trade_outcome_endpoint, methods=["POST"], dependencies=dependencies, name="skill_trade_outcome_endpoint")
     app.state.broker_sync_status_route_registered = True
     app.state.broker_sync_snapshot_route_registered = True
+    app.state.skill_trade_outcome_route_registered = True
     app.state.broker_sync_routes_registered = True
 
 
@@ -206,6 +212,7 @@ def setup_broker_sync_tables(db) -> None:
         finally:
             cursor.close()
     setup_position_bucket_columns(db)
+    setup_skill_trade_outcome_table(db)
     _register_status_route(db)
 
 
