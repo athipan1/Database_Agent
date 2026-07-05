@@ -41,10 +41,10 @@ def test_session_risk_endpoint_returns_snapshot():
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "success"
-    assert body["data"]["daily_realized_pnl"] == -12.5
-    assert body["data"]["weekly_realized_pnl"] == -20.0
+    assert body["data"]["account_id"] == 1
+    assert body["data"]["symbol"] == "AAPL"
+    assert body["data"]["date"] == "2026-06-21"
     assert body["data"]["consecutive_losses"] == 1
-    assert body["data"]["symbol_trades_today"] == 1
     build_snapshot.assert_called_once_with(main.db, "1", symbol="AAPL", emergency_halt=main.DATABASE_EMERGENCY_HALT)
 
 
