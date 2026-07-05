@@ -270,6 +270,8 @@ class Order(CustomBaseModel):
 
     protective_exit: Optional[Dict[str, Any]] = None
 
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
     status: OrderStatus = OrderStatus.PENDING
 
     broker_order_id: Optional[str] = None
@@ -317,6 +319,8 @@ class CreateOrderBody(CustomBaseModel):
     guard_plan: Optional[Dict[str, Any]] = None
 
     protective_exit: Optional[Dict[str, Any]] = None
+
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
     client_order_id: Optional[Union[UUID, str]] = None
 
@@ -518,47 +522,43 @@ class SignalHistory(CustomBaseModel):
 
     signal_id: str
 
-    account_id: Union[int, str]
-
     symbol: str
 
-    timestamp: datetime.datetime
+    source_agent: str
 
-    source_agent: str = "manager-agent"
+    strategy_bucket: str = "unassigned"
 
-    candidate_score: Optional[float] = None
+    signal_type: str
 
-    technical_score: Optional[float] = None
+    confidence_score: Decimal
 
-    fundamental_score: Optional[float] = None
+    features: Dict[str, Any] = Field(default_factory=dict)
 
-    final_verdict: Optional[str] = None
+    recommendation: Optional[Dict[str, Any]] = None
 
-    market_regime: Optional[str] = None
+    horizon: Optional[str] = None
 
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime.datetime] = None
 
 class CreateSignalHistoryBody(CustomBaseModel):
 
     signal_id: Optional[str] = None
 
-    account_id: Union[int, str]
-
     symbol: str
 
-    source_agent: str = "manager-agent"
+    source_agent: str
 
-    candidate_score: Optional[float] = None
+    strategy_bucket: str = "unassigned"
 
-    technical_score: Optional[float] = None
+    signal_type: str
 
-    fundamental_score: Optional[float] = None
+    confidence_score: Decimal
 
-    final_verdict: Optional[str] = None
+    features: Dict[str, Any] = Field(default_factory=dict)
 
-    market_regime: Optional[str] = None
+    recommendation: Optional[Dict[str, Any]] = None
 
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    horizon: Optional[str] = None
 
 class PerformanceMetric(CustomBaseModel):
 
@@ -566,25 +566,19 @@ class PerformanceMetric(CustomBaseModel):
 
     account_id: Union[int, str]
 
-    symbol: str
+    symbol: Optional[str] = None
 
-    timestamp: datetime.datetime
+    metric_type: str
 
-    source_agent: str = "learning-agent"
+    strategy_bucket: Optional[str] = None
 
-    entry_price: Optional[Decimal] = None
+    value: Decimal
 
-    exit_price: Optional[Decimal] = None
-
-    current_price: Optional[Decimal] = None
-
-    return_pct: Optional[float] = None
-
-    holding_days: Optional[int] = None
-
-    outcome: Optional[str] = None
+    window: str = "all"
 
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    created_at: Optional[datetime.datetime] = None
 
 class CreatePerformanceMetricBody(CustomBaseModel):
 
@@ -592,49 +586,17 @@ class CreatePerformanceMetricBody(CustomBaseModel):
 
     account_id: Union[int, str]
 
-    symbol: str
-
-    source_agent: str = "learning-agent"
-
-    entry_price: Optional[Decimal] = None
-
-    exit_price: Optional[Decimal] = None
-
-    current_price: Optional[Decimal] = None
-
-    return_pct: Optional[float] = None
-
-    holding_days: Optional[int] = None
-
-    outcome: Optional[str] = None
-
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-class SessionRiskSnapshot(CustomBaseModel):
-
-    account_id: Union[int, str]
-
     symbol: Optional[str] = None
 
-    daily_realized_pnl: float = 0.0
+    metric_type: str
 
-    weekly_realized_pnl: float = 0.0
+    strategy_bucket: Optional[str] = None
 
-    consecutive_losses: int = 0
+    value: Decimal
 
-    trades_today: int = 0
+    window: str = "all"
 
-    symbol_trades_today: int = 0
-
-    minutes_since_last_loss: Optional[float] = None
-
-    minutes_since_last_symbol_trade: Optional[float] = None
-
-    emergency_halt: bool = False
-
-    source: str = "database_agent"
-
-    generated_at: Optional[datetime.datetime] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class Price(CustomBaseModel):
 
@@ -651,3 +613,25 @@ class Price(CustomBaseModel):
     close: Decimal
 
     volume: int
+
+class SessionRiskSnapshot(CustomBaseModel):
+
+    account_id: Union[int, str]
+
+    symbol: Optional[str] = None
+
+    date: str
+
+    trade_count: int = 0
+
+    gross_realized_pnl: Decimal = Decimal("0")
+
+    net_realized_pnl: Decimal = Decimal("0")
+
+    max_drawdown: Decimal = Decimal("0")
+
+    consecutive_losses: int = 0
+
+    risk_budget_remaining: Decimal = Decimal("0")
+
+    metadata: Dict[str, Any] = Field(default_factory=dict)
