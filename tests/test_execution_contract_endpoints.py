@@ -29,6 +29,7 @@ def order_row(**overrides):
         "final_quantity": 10,
         "guard_plan": '{"symbol":"AAPL","side":"sell","quantity":10,"trigger_price":90}',
         "protective_exit": None,
+        "metadata": '{"curator_signal":{"skill_id":"skill-1"}}',
         "executed_quantity": 0,
     }
     data.update(overrides)
@@ -58,6 +59,7 @@ def test_get_order_by_trade_id_contract_returns_protective_metadata():
     data = response.json()["data"]
     assert data["order_id"] == 42
     assert data["guard_plan"] == {"symbol": "AAPL", "side": "sell", "quantity": 10, "trigger_price": 90}
+    assert data["metadata"] == {"curator_signal": {"skill_id": "skill-1"}}
 
 
 def test_get_order_by_id_contract_returns_order():
@@ -67,6 +69,7 @@ def test_get_order_by_id_contract_returns_order():
 
     assert response.status_code == 200
     assert response.json()["data"]["trade_id"] == "trade-42"
+    assert response.json()["data"]["metadata"]["curator_signal"]["skill_id"] == "skill-1"
 
 
 def test_patch_order_contract_updates_status_fields():
@@ -79,6 +82,17 @@ def test_patch_order_contract_updates_status_fields():
     update_order.assert_called_once_with(42, updates)
     assert response.json()["data"]["status"] == "placed"
     assert response.json()["data"]["broker_order_id"] == "broker-1"
+
+
+def test_patch_order_contract_updates_metadata():
+    updates = {"metadata": {"curator_signal": {"skill_id": "skill-2", "execution_log_id": "log-2"}}}
+    with patch.object(main, "DATABASE_AGENT_API_KEY", "test-key"), \
+            patch.object(main.db, "update_order", return_value=order_row(metadata=updates["metadata"])) as update_order:
+        response = client.patch("/orders/42", json=updates, headers=HEADERS)
+
+    assert response.status_code == 200
+    update_order.assert_called_once_with(42, updates)
+    assert response.json()["data"]["metadata"] == updates["metadata"]
 
 
 def test_create_execution_job_contract():
