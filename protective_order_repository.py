@@ -7,6 +7,7 @@ PROTECTIVE_ORDER_COLUMNS = {
     "final_quantity": "BIGINT",
     "guard_plan": "TEXT",
     "protective_exit": "TEXT",
+    "metadata": "TEXT",
 }
 
 
@@ -49,12 +50,14 @@ def persist_protective_order_metadata(
     final_quantity: Optional[int] = None,
     guard_plan: Optional[Dict[str, Any]] = None,
     protective_exit: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     updates = {
         "risk_approval_id": risk_approval_id,
         "final_quantity": final_quantity,
         "guard_plan": _json_or_none(guard_plan),
         "protective_exit": _json_or_none(protective_exit),
+        "metadata": _json_or_none(metadata),
     }
     updates = {key: value for key, value in updates.items() if value is not None}
     if not updates:
@@ -80,4 +83,5 @@ def normalize_order_protective_metadata(order: Optional[Dict[str, Any]]) -> Opti
     normalized = dict(order)
     normalized["guard_plan"] = _parse_json(normalized.get("guard_plan"))
     normalized["protective_exit"] = _parse_json(normalized.get("protective_exit"))
+    normalized["metadata"] = _parse_json(normalized.get("metadata")) or {}
     return normalized
