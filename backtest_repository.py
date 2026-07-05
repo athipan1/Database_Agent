@@ -206,7 +206,10 @@ def _result_from_row(row: Any) -> SkillBacktestResult:
 
 def upsert_market_data_bars(db, bars: List[MarketDataBar]) -> List[MarketDataBar]:
     now = _utc_now()
-    normalized = [bar.model_copy(update={"symbol": bar.symbol.upper(), "created_at": bar.created_at or now}) for bar in bars]
+    normalized = [
+        bar.model_copy(update={"symbol": bar.symbol.upper(), "created_at": bar.created_at or now})
+        for bar in bars
+    ]
     if not normalized:
         return []
     with db.connection_scope() as conn:
@@ -220,7 +223,19 @@ def upsert_market_data_bars(db, bars: List[MarketDataBar]) -> List[MarketDataBar
                         (symbol, timeframe, bar_time, open, high, low, close, volume, source, metadata, created_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (bar.symbol, bar.timeframe, bar.bar_time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.source, _json_dumps(bar.metadata), bar.created_at),
+                        (
+                            bar.symbol,
+                            bar.timeframe,
+                            bar.bar_time,
+                            bar.open,
+                            bar.high,
+                            bar.low,
+                            bar.close,
+                            bar.volume,
+                            bar.source,
+                            _json_dumps(bar.metadata),
+                            bar.created_at,
+                        ),
                     )
                 else:
                     cursor.execute(
@@ -238,7 +253,19 @@ def upsert_market_data_bars(db, bars: List[MarketDataBar]) -> List[MarketDataBar
                             metadata = EXCLUDED.metadata,
                             created_at = EXCLUDED.created_at
                         """,
-                        (bar.symbol, bar.timeframe, bar.bar_time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.source, _json_dumps(bar.metadata), bar.created_at),
+                        (
+                            bar.symbol,
+                            bar.timeframe,
+                            bar.bar_time,
+                            bar.open,
+                            bar.high,
+                            bar.low,
+                            bar.close,
+                            bar.volume,
+                            bar.source,
+                            _json_dumps(bar.metadata),
+                            bar.created_at,
+                        ),
                     )
             conn.commit()
         except Exception:
@@ -249,7 +276,15 @@ def upsert_market_data_bars(db, bars: List[MarketDataBar]) -> List[MarketDataBar
     return normalized
 
 
-def list_market_data_bars(db, *, symbol: str, timeframe: str = "1d", start_time: Optional[datetime] = None, end_time: Optional[datetime] = None, limit: int = 5000) -> List[MarketDataBar]:
+def list_market_data_bars(
+    db,
+    *,
+    symbol: str,
+    timeframe: str = "1d",
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    limit: int = 5000,
+) -> List[MarketDataBar]:
     query = f"SELECT * FROM market_data_bars WHERE symbol = {db.param_style} AND timeframe = {db.param_style}"
     params: List[Any] = [symbol.upper(), timeframe]
     if start_time:
@@ -273,17 +308,38 @@ def create_backtest_run_detail(db, body) -> BacktestRunDetail:
     now = _utc_now()
     run_id = body.run_id or str(uuid.uuid4())
     run = BacktestRun(
-        **body.model_dump(exclude={"run_id", "trades", "equity_curve", "skill_result", "created_at", "updated_at"}),
+        **body.model_dump(
+            exclude={"run_id", "symbol", "trades", "equity_curve", "skill_result", "created_at", "updated_at"}
+        ),
         run_id=run_id,
         symbol=body.symbol.upper() if body.symbol else None,
         created_at=body.created_at or now,
         updated_at=body.updated_at or now,
     )
-    trades = [trade.model_copy(update={"trade_id": trade.trade_id or str(uuid.uuid4()), "run_id": run_id, "symbol": trade.symbol.upper(), "created_at": trade.created_at or now}) for trade in body.trades]
-    equity_curve = [point.model_copy(update={"point_id": point.point_id or str(uuid.uuid4()), "run_id": run_id}) for point in body.equity_curve]
+    trades = [
+        trade.model_copy(
+            update={
+                "trade_id": trade.trade_id or str(uuid.uuid4()),
+                "run_id": run_id,
+                "symbol": trade.symbol.upper(),
+                "created_at": trade.created_at or now,
+            }
+        )
+        for trade in body.trades
+    ]
+    equity_curve = [
+        point.model_copy(update={"point_id": point.point_id or str(uuid.uuid4()), "run_id": run_id})
+        for point in body.equity_curve
+    ]
     skill_result = None
     if body.skill_result:
-        skill_result = body.skill_result.model_copy(update={"result_id": body.skill_result.result_id or str(uuid.uuid4()), "run_id": run_id, "created_at": body.skill_result.created_at or now})
+        skill_result = body.skill_result.model_copy(
+            update={
+                "result_id": body.skill_result.result_id or str(uuid.uuid4()),
+                "run_id": run_id,
+                "created_at": body.skill_result.created_at or now,
+            }
+        )
     elif body.skill_id:
         skill_result = _default_skill_result(run, trades)
 
@@ -300,9 +356,22 @@ def create_backtest_run_detail(db, body) -> BacktestRunDetail:
                         {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style})
                 """,
                 (
-                    run.run_id, run.account_id, run.skill_id, run.strategy_id, run.symbol, run.timeframe,
-                    run.start_time, run.end_time, run.status, run.engine_version, _json_dumps(run.parameters),
-                    _json_dumps(run.metrics), run.source_agent, _json_dumps(run.metadata), run.created_at, run.updated_at,
+                    run.run_id,
+                    run.account_id,
+                    run.skill_id,
+                    run.strategy_id,
+                    run.symbol,
+                    run.timeframe,
+                    run.start_time,
+                    run.end_time,
+                    run.status,
+                    run.engine_version,
+                    _json_dumps(run.parameters),
+                    _json_dumps(run.metrics),
+                    run.source_agent,
+                    _json_dumps(run.metadata),
+                    run.created_at,
+                    run.updated_at,
                 ),
             )
             for trade in trades:
@@ -315,7 +384,23 @@ def create_backtest_run_detail(db, body) -> BacktestRunDetail:
                             {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style},
                             {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style})
                     """,
-                    (trade.trade_id, trade.run_id, trade.symbol, trade.side, trade.quantity, trade.entry_time, trade.entry_price, trade.exit_time, trade.exit_price, trade.realized_pl, trade.realized_pl_pct, trade.fees, trade.outcome, _json_dumps(trade.metadata), trade.created_at),
+                    (
+                        trade.trade_id,
+                        trade.run_id,
+                        trade.symbol,
+                        trade.side,
+                        trade.quantity,
+                        trade.entry_time,
+                        trade.entry_price,
+                        trade.exit_time,
+                        trade.exit_price,
+                        trade.realized_pl,
+                        trade.realized_pl_pct,
+                        trade.fees,
+                        trade.outcome,
+                        _json_dumps(trade.metadata),
+                        trade.created_at,
+                    ),
                 )
             for point in equity_curve:
                 cursor.execute(
@@ -324,7 +409,14 @@ def create_backtest_run_detail(db, body) -> BacktestRunDetail:
                     (point_id, run_id, timestamp, equity, drawdown, metadata)
                     VALUES ({db.param_style}, {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style})
                     """,
-                    (point.point_id, point.run_id, point.timestamp, point.equity, point.drawdown, _json_dumps(point.metadata)),
+                    (
+                        point.point_id,
+                        point.run_id,
+                        point.timestamp,
+                        point.equity,
+                        point.drawdown,
+                        _json_dumps(point.metadata),
+                    ),
                 )
             if skill_result:
                 cursor.execute(
@@ -336,7 +428,22 @@ def create_backtest_run_detail(db, body) -> BacktestRunDetail:
                             {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style},
                             {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style})
                     """,
-                    (skill_result.result_id, skill_result.skill_id, skill_result.run_id, int(skill_result.passed), skill_result.status, skill_result.win_rate, skill_result.profit_factor, skill_result.expectancy, skill_result.max_drawdown, skill_result.total_trades, skill_result.score, _json_dumps(skill_result.reasons), _json_dumps(skill_result.metadata), skill_result.created_at),
+                    (
+                        skill_result.result_id,
+                        skill_result.skill_id,
+                        skill_result.run_id,
+                        int(skill_result.passed),
+                        skill_result.status,
+                        skill_result.win_rate,
+                        skill_result.profit_factor,
+                        skill_result.expectancy,
+                        skill_result.max_drawdown,
+                        skill_result.total_trades,
+                        skill_result.score,
+                        _json_dumps(skill_result.reasons),
+                        _json_dumps(skill_result.metadata),
+                        skill_result.created_at,
+                    ),
                 )
             conn.commit()
         except Exception:
@@ -354,8 +461,19 @@ def _default_skill_result(run: BacktestRun, trades: List[BacktestTrade]) -> Skil
     profit_factor = _float_or_none(metrics.get("profit_factor"))
     expectancy = _float_or_none(metrics.get("expectancy"))
     max_drawdown = _float_or_none(metrics.get("max_drawdown"))
-    score = _score(win_rate=win_rate, profit_factor=profit_factor, expectancy=expectancy, max_drawdown=max_drawdown, total_trades=total_trades)
-    passed = bool(total_trades >= 20 and (profit_factor or 0) >= 1.2 and (max_drawdown is None or max_drawdown <= 0.25) and (win_rate is None or win_rate >= 0.45))
+    score = _score(
+        win_rate=win_rate,
+        profit_factor=profit_factor,
+        expectancy=expectancy,
+        max_drawdown=max_drawdown,
+        total_trades=total_trades,
+    )
+    passed = bool(
+        total_trades >= 20
+        and (profit_factor or 0) >= 1.2
+        and (max_drawdown is None or max_drawdown <= 0.25)
+        and (win_rate is None or win_rate >= 0.45)
+    )
     reasons = [
         f"total_trades={total_trades}",
         f"profit_factor={profit_factor}",
@@ -389,13 +507,27 @@ def _float_or_none(value: Any) -> Optional[float]:
         return None
 
 
-def _score(*, win_rate: Optional[float], profit_factor: Optional[float], expectancy: Optional[float], max_drawdown: Optional[float], total_trades: int) -> float:
+def _score(
+    *,
+    win_rate: Optional[float],
+    profit_factor: Optional[float],
+    expectancy: Optional[float],
+    max_drawdown: Optional[float],
+    total_trades: int,
+) -> float:
     win_rate_score = max(0.0, min(1.0, win_rate if win_rate is not None else 0.0))
     profit_score = max(0.0, min(1.0, ((profit_factor or 0.0) - 0.8) / 1.2))
     expectancy_score = max(0.0, min(1.0, ((expectancy or 0.0) + 1.0) / 2.0))
     drawdown_score = 1.0 - max(0.0, min(1.0, (max_drawdown or 0.0) / 0.5))
     sample_score = max(0.0, min(1.0, total_trades / 50.0))
-    return round((0.25 * win_rate_score) + (0.30 * profit_score) + (0.20 * expectancy_score) + (0.15 * drawdown_score) + (0.10 * sample_score), 4)
+    return round(
+        (0.25 * win_rate_score)
+        + (0.30 * profit_score)
+        + (0.20 * expectancy_score)
+        + (0.15 * drawdown_score)
+        + (0.10 * sample_score),
+        4,
+    )
 
 
 def get_backtest_run_detail(db, run_id: str) -> Optional[BacktestRunDetail]:
@@ -409,9 +541,15 @@ def get_backtest_run_detail(db, run_id: str) -> Optional[BacktestRunDetail]:
             run = _run_from_row(row)
             cursor.execute(f"SELECT * FROM backtest_trades WHERE run_id = {db.param_style} ORDER BY entry_time ASC", (run_id,))
             trades = [_trade_from_row(item) for item in (cursor.fetchall() or [])]
-            cursor.execute(f"SELECT * FROM backtest_equity_curve WHERE run_id = {db.param_style} ORDER BY timestamp ASC", (run_id,))
+            cursor.execute(
+                f"SELECT * FROM backtest_equity_curve WHERE run_id = {db.param_style} ORDER BY timestamp ASC",
+                (run_id,),
+            )
             equity_curve = [_equity_from_row(item) for item in (cursor.fetchall() or [])]
-            cursor.execute(f"SELECT * FROM skill_backtest_results WHERE run_id = {db.param_style} ORDER BY created_at DESC LIMIT 1", (run_id,))
+            cursor.execute(
+                f"SELECT * FROM skill_backtest_results WHERE run_id = {db.param_style} ORDER BY created_at DESC LIMIT 1",
+                (run_id,),
+            )
             result_row = cursor.fetchone()
             skill_result = _result_from_row(result_row) if result_row else None
             return BacktestRunDetail(run=run, trades=trades, equity_curve=equity_curve, skill_result=skill_result)
