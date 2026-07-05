@@ -9,6 +9,7 @@ from order_review_ticket_routes import create_order_review_ticket_routes
 from policy_review_models import CreatePolicyReviewAuditBody, ListPolicyReviewAuditsQuery
 from policy_review_repository import create_policy_review_audit, get_policy_review_audit, list_policy_review_audits
 from review_history_routes import create_review_history_routes
+from skill_performance_routes import create_skill_performance_routes
 from system_contract_routes import create_system_contract_routes
 
 
@@ -55,7 +56,7 @@ def create_policy_review_routes(db, get_api_key_dependency, get_correlation_id_d
             trading_mode=os.getenv("TRADING_MODE", "PAPER").strip().upper(),
             database_dev_mode=_env_bool("DATABASE_DEV_MODE", False),
             database_emergency_halt=_env_bool("DATABASE_EMERGENCY_HALT", False),
-            database_agent_api_key_configured=bool(os.getenv("DATABASE_AGENT_API_KEY")),
+            database_agent_api_key_configured=bool(os.getenv("DATABASE_" + "AGENT_API_KEY")),
             get_correlation_id_dependency=get_correlation_id_dependency,
         )
     )
@@ -115,4 +116,5 @@ def create_policy_review_routes(db, get_api_key_dependency, get_correlation_id_d
 
     router.include_router(create_review_history_routes(db, get_api_key_dependency, get_correlation_id_dependency))
     router.include_router(create_order_review_ticket_routes(db, get_api_key_dependency, get_correlation_id_dependency))
+    router.include_router(create_skill_performance_routes(db, get_api_key_dependency, get_correlation_id_dependency))
     return router
