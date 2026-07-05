@@ -130,6 +130,67 @@ def _status(value: Any) -> str:
     }.get(raw, "placed" if raw else "pending")
 
 
+def _skill_trade_outcome_metadata(payload: Dict[str, Any]) -> Dict[str, str]:
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    trade_id = payload.get("trade_id") or payload.get("order_id") or metadata.get("trade_id") or ""
+    symbol = payload.get("symbol") or metadata.get("symbol") or ""
+    return {
+        "trade_id": str(trade_id),
+        "symbol": str(symbol).upper(),
+    }
+
+
+def _create_skill_trade_outcomes_table(cursor, db) -> None:
+    timestamp_type = "TEXT" if db.db_type == "sqlite" else "TIMESTAMPTZ"
+    json_type = "TEXT" if db.db_type == "sqlite" else "JSONB"
+    pk_type = "INTEGER PRIMARY KEY AUTOINCREMENT" if db.db_type == "sqlite" else "SERIAL PRIMARY KEY"
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS skill_trade_outcomes (
+            outcome_id {pk_type},
+            trade_id TEXT,
+            symbol TEXT,
+            payload {json_type} NOT NULL,
+            created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def record_skill_trade_outcome(db, payload: Dict[str, Any]) -> Dict[str, Any]:
+    payload = payload if isinstance(payload, dict) else {"value": payload}
+    metadata = _skill_trade_outcome_metadata(payload)
+    p = _param(db)
+    with db.connection_scope() as conn:
+        cursor = db.get_cursor(conn)
+        try:
+            _create_skill_trade_outcomes_table(cursor, db)
+            cursor.execute(
+                f"""
+                INSERT INTO skill_trade_outcomes (trade_id, symbol, payload, created_at)
+                VALUES ({p}, {p}, {p}, {p})
+                """,
+                (
+                    metadata["trade_id"],
+                    metadata["symbol"],
+                    _payload(payload, db),
+                    _now(db),
+                ),
+            )
+            outcome_id = getattr(cursor, "lastrowid", None)
+            conn.commit()
+            return {
+                "recorded": True,
+                "outcome_id": outcome_id,
+                "trade_id": metadata["trade_id"] or None,
+                "symbol": metadata["symbol"] or None,
+                "source": "database_agent_skill_trade_outcomes",
+            }
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+
 def _main_module():
     return sys.modules.get("main") or sys.modules.get("__main__")
 
@@ -161,10 +222,15 @@ def _register_status_route(db) -> None:
     async def broker_sync_snapshot_endpoint(payload: Dict[str, Any]):
         return wrap_response(data=sync_broker_state(db, payload))
 
+    async def skill_trade_outcome_endpoint(payload: Dict[str, Any]):
+        return wrap_response(data=record_skill_trade_outcome(db, payload))
+
     app.add_api_route("/broker-sync/status", broker_sync_status_endpoint, methods=["GET"], dependencies=dependencies, name="broker_sync_status_endpoint")
     app.add_api_route("/broker-sync/snapshot", broker_sync_snapshot_endpoint, methods=["POST"], dependencies=dependencies, name="broker_sync_snapshot_endpoint")
+    app.add_api_route("/skills/trade-outcomes", skill_trade_outcome_endpoint, methods=["POST"], dependencies=dependencies, name="skill_trade_outcome_endpoint")
     app.state.broker_sync_status_route_registered = True
     app.state.broker_sync_snapshot_route_registered = True
+    app.state.skill_trade_outcome_route_registered = True
     app.state.broker_sync_routes_registered = True
 
 
@@ -189,6 +255,7 @@ def setup_broker_sync_tables(db) -> None:
                     created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            _create_skill_trade_outcomes_table(cursor, db)
             db._add_column_if_not_exists(cursor, "orders", "broker_synced_at", timestamp_type)
             db._add_column_if_not_exists(cursor, "orders", "broker_status", "TEXT")
             db._add_column_if_not_exists(cursor, "orders", "strategy_bucket", "TEXT DEFAULT 'unassigned'")
