@@ -270,6 +270,8 @@ class Order(CustomBaseModel):
 
     protective_exit: Optional[Dict[str, Any]] = None
 
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
     status: OrderStatus = OrderStatus.PENDING
 
     broker_order_id: Optional[str] = None
@@ -317,6 +319,8 @@ class CreateOrderBody(CustomBaseModel):
     guard_plan: Optional[Dict[str, Any]] = None
 
     protective_exit: Optional[Dict[str, Any]] = None
+
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
     client_order_id: Optional[Union[UUID, str]] = None
 
