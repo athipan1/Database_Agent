@@ -18,6 +18,7 @@ def test_session_risk_endpoint_returns_snapshot():
     snapshot = {
         "account_id": 1,
         "symbol": "AAPL",
+        "date": "2026-06-21",
         "daily_realized_pnl": -12.5,
         "weekly_realized_pnl": -20.0,
         "consecutive_losses": 1,
