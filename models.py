@@ -522,43 +522,47 @@ class SignalHistory(CustomBaseModel):
 
     signal_id: str
 
+    account_id: Union[int, str]
+
     symbol: str
 
-    source_agent: str
+    timestamp: datetime.datetime
 
-    strategy_bucket: str = "unassigned"
+    source_agent: str = "manager-agent"
 
-    signal_type: str
+    candidate_score: Optional[float] = None
 
-    confidence_score: Decimal
+    technical_score: Optional[float] = None
 
-    features: Dict[str, Any] = Field(default_factory=dict)
+    fundamental_score: Optional[float] = None
 
-    recommendation: Optional[Dict[str, Any]] = None
+    final_verdict: Optional[str] = None
 
-    horizon: Optional[str] = None
+    market_regime: Optional[str] = None
 
-    created_at: Optional[datetime.datetime] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class CreateSignalHistoryBody(CustomBaseModel):
 
     signal_id: Optional[str] = None
 
+    account_id: Union[int, str]
+
     symbol: str
 
-    source_agent: str
+    source_agent: str = "manager-agent"
 
-    strategy_bucket: str = "unassigned"
+    candidate_score: Optional[float] = None
 
-    signal_type: str
+    technical_score: Optional[float] = None
 
-    confidence_score: Decimal
+    fundamental_score: Optional[float] = None
 
-    features: Dict[str, Any] = Field(default_factory=dict)
+    final_verdict: Optional[str] = None
 
-    recommendation: Optional[Dict[str, Any]] = None
+    market_regime: Optional[str] = None
 
-    horizon: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class PerformanceMetric(CustomBaseModel):
 
@@ -566,19 +570,25 @@ class PerformanceMetric(CustomBaseModel):
 
     account_id: Union[int, str]
 
-    symbol: Optional[str] = None
+    symbol: str
 
-    metric_type: str
+    timestamp: datetime.datetime
 
-    strategy_bucket: Optional[str] = None
+    source_agent: str = "learning-agent"
 
-    value: Decimal
+    entry_price: Optional[Decimal] = None
 
-    window: str = "all"
+    exit_price: Optional[Decimal] = None
+
+    current_price: Optional[Decimal] = None
+
+    return_pct: Optional[float] = None
+
+    holding_days: Optional[int] = None
+
+    outcome: Optional[str] = None
 
     metadata: Dict[str, Any] = Field(default_factory=dict)
-
-    created_at: Optional[datetime.datetime] = None
 
 class CreatePerformanceMetricBody(CustomBaseModel):
 
@@ -586,17 +596,49 @@ class CreatePerformanceMetricBody(CustomBaseModel):
 
     account_id: Union[int, str]
 
-    symbol: Optional[str] = None
+    symbol: str
 
-    metric_type: str
+    source_agent: str = "learning-agent"
 
-    strategy_bucket: Optional[str] = None
+    entry_price: Optional[Decimal] = None
 
-    value: Decimal
+    exit_price: Optional[Decimal] = None
 
-    window: str = "all"
+    current_price: Optional[Decimal] = None
+
+    return_pct: Optional[float] = None
+
+    holding_days: Optional[int] = None
+
+    outcome: Optional[str] = None
 
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class SessionRiskSnapshot(CustomBaseModel):
+
+    account_id: Union[int, str]
+
+    symbol: Optional[str] = None
+
+    daily_realized_pnl: float = 0.0
+
+    weekly_realized_pnl: float = 0.0
+
+    consecutive_losses: int = 0
+
+    trades_today: int = 0
+
+    symbol_trades_today: int = 0
+
+    minutes_since_last_loss: Optional[float] = None
+
+    minutes_since_last_symbol_trade: Optional[float] = None
+
+    emergency_halt: bool = False
+
+    source: str = "database_agent"
+
+    generated_at: Optional[datetime.datetime] = None
 
 class Price(CustomBaseModel):
 
@@ -613,25 +655,3 @@ class Price(CustomBaseModel):
     close: Decimal
 
     volume: int
-
-class SessionRiskSnapshot(CustomBaseModel):
-
-    account_id: Union[int, str]
-
-    symbol: Optional[str] = None
-
-    date: str
-
-    trade_count: int = 0
-
-    gross_realized_pnl: Decimal = Decimal("0")
-
-    net_realized_pnl: Decimal = Decimal("0")
-
-    max_drawdown: Decimal = Decimal("0")
-
-    consecutive_losses: int = 0
-
-    risk_budget_remaining: Decimal = Decimal("0")
-
-    metadata: Dict[str, Any] = Field(default_factory=dict)
