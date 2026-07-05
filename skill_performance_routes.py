@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -13,6 +12,7 @@ from skill_performance_repository import (
     create_skill_trade_outcome,
     list_skill_execution_logs,
     rank_skill_performance,
+    setup_skill_performance_tables,
 )
 
 
@@ -38,6 +38,7 @@ def wrap_response(
 
 
 def create_skill_performance_routes(db, get_api_key_dependency, get_correlation_id_dependency):
+    setup_skill_performance_tables(db)
     router = APIRouter(prefix="/skills", tags=["skill-performance"])
     api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
