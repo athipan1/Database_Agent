@@ -45,5 +45,7 @@ EXPOSE 8004
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:8004/health || exit 1
 
-# The command to run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8004"]
+# The command to run the application.
+# main_with_skill_routes imports the existing main:app and mounts Curator-facing
+# skill performance/backtest routes used by Curator_Agent.
+CMD ["uvicorn", "main_with_skill_routes:app", "--host", "0.0.0.0", "--port", "8004"]
