@@ -28,11 +28,14 @@ def _parse_json(value: Any) -> Optional[Dict[str, Any]]:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _metadata_strategy_bucket(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
-    if not isinstance(metadata, dict):
-        return None
-    bucket = metadata.get("strategy_bucket") or metadata.get("bucket")
-    return str(bucket) if bucket else None
+def _strategy_bucket_from_payload(*payloads: Optional[Dict[str, Any]]) -> Optional[str]:
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        bucket = payload.get("strategy_bucket") or payload.get("bucket")
+        if bucket:
+            return str(bucket)
+    return None
 
 
 def setup_protective_order_columns(db) -> None:
@@ -60,7 +63,7 @@ def persist_protective_order_metadata(
     protective_exit: Optional[Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
-    strategy_bucket = _metadata_strategy_bucket(metadata)
+    strategy_bucket = _strategy_bucket_from_payload(metadata, guard_plan, protective_exit)
     updates = {
         "risk_approval_id": risk_approval_id,
         "final_quantity": final_quantity,
@@ -96,7 +99,7 @@ def normalize_order_protective_metadata(order: Optional[Dict[str, Any]]) -> Opti
     normalized["metadata"] = _parse_json(normalized.get("metadata")) or {}
     normalized["strategy_bucket"] = (
         normalized.get("strategy_bucket")
-        or _metadata_strategy_bucket(normalized["metadata"])
+        or _strategy_bucket_from_payload(normalized["metadata"], normalized["guard_plan"], normalized["protective_exit"])
         or "unassigned"
     )
     return normalized
