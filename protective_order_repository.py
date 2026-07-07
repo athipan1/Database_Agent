@@ -8,6 +8,7 @@ PROTECTIVE_ORDER_COLUMNS = {
     "guard_plan": "TEXT",
     "protective_exit": "TEXT",
     "metadata": "TEXT",
+    "strategy_bucket": "TEXT DEFAULT 'unassigned'",
 }
 
 
@@ -25,6 +26,13 @@ def _parse_json(value: Any) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _metadata_strategy_bucket(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(metadata, dict):
+        return None
+    bucket = metadata.get("strategy_bucket") or metadata.get("bucket")
+    return str(bucket) if bucket else None
 
 
 def setup_protective_order_columns(db) -> None:
@@ -52,12 +60,14 @@ def persist_protective_order_metadata(
     protective_exit: Optional[Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
+    strategy_bucket = _metadata_strategy_bucket(metadata)
     updates = {
         "risk_approval_id": risk_approval_id,
         "final_quantity": final_quantity,
         "guard_plan": _json_or_none(guard_plan),
         "protective_exit": _json_or_none(protective_exit),
         "metadata": _json_or_none(metadata),
+        "strategy_bucket": strategy_bucket,
     }
     updates = {key: value for key, value in updates.items() if value is not None}
     if not updates:
@@ -84,4 +94,9 @@ def normalize_order_protective_metadata(order: Optional[Dict[str, Any]]) -> Opti
     normalized["guard_plan"] = _parse_json(normalized.get("guard_plan"))
     normalized["protective_exit"] = _parse_json(normalized.get("protective_exit"))
     normalized["metadata"] = _parse_json(normalized.get("metadata")) or {}
+    normalized["strategy_bucket"] = (
+        normalized.get("strategy_bucket")
+        or _metadata_strategy_bucket(normalized["metadata"])
+        or "unassigned"
+    )
     return normalized
