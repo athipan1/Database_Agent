@@ -205,10 +205,14 @@ class CreateOrderBody(CustomBaseModel):
     client_order_id: Optional[Union[UUID, str]] = None
 
     @model_validator(mode="after")
-    def mirror_strategy_bucket_into_metadata(self):
+    def mirror_strategy_bucket_into_order_metadata(self):
         metadata = dict(self.metadata or {})
         metadata.setdefault("strategy_bucket", self.strategy_bucket)
         self.metadata = metadata
+
+        guard_plan = dict(self.guard_plan or {})
+        guard_plan.setdefault("strategy_bucket", self.strategy_bucket)
+        self.guard_plan = guard_plan
         return self
 
 
