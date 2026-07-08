@@ -1,26 +1,34 @@
-"""Runtime entrypoint with skill performance and backtest routes mounted.
+"""Database_Agent runtime entrypoint.
 
-This module keeps the existing ``main.py`` application intact while adding the
-routes needed by Curator_Agent:
+This entrypoint keeps the legacy ``main.py`` application while mounting the
+Curator-facing routes and installing the atomic strategy-bucket order creation
+contract used by the Docker runtime.
+
+Mounted Curator routes:
 
 - POST /skills/execution-logs
 - GET  /skills/performance/rank
 - GET  /skills/{skill_id}/backtest-status
-
-Docker uses this entrypoint so the Curator -> Database integration works at
-runtime without changing the legacy monolithic main module in this PR.
 """
 
 from __future__ import annotations
 
 import logging
 
-from main import app, db, get_api_key, get_correlation_id
-from skill_performance_repository import setup_skill_performance_tables
-from skill_performance_routes import create_skill_performance_routes
+import main as main_module
 from backtest_repository import setup_backtest_tables
 from backtest_routes import create_backtest_routes
+from order_creation_persistence import install_strategy_bucket_order_creation
+from skill_performance_repository import setup_skill_performance_tables
+from skill_performance_routes import create_skill_performance_routes
 
+
+install_strategy_bucket_order_creation(main_module)
+
+app = main_module.app
+db = main_module.db
+get_api_key = main_module.get_api_key
+get_correlation_id = main_module.get_correlation_id
 
 app.include_router(create_skill_performance_routes(db, get_api_key, get_correlation_id))
 app.include_router(create_backtest_routes(db, get_api_key, get_correlation_id))
