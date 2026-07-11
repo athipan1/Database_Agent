@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Security
 from fastapi.security import APIKeyHeader
 
 from backtest_routes import create_backtest_routes
+from curator_observation_routes import create_curator_observation_routes
 from order_review_ticket_routes import create_order_review_ticket_routes
 from policy_review_models import CreatePolicyReviewAuditBody, ListPolicyReviewAuditsQuery
 from policy_review_repository import create_policy_review_audit, get_policy_review_audit, list_policy_review_audits
@@ -119,4 +120,5 @@ def create_policy_review_routes(db, get_api_key_dependency, get_correlation_id_d
     router.include_router(create_order_review_ticket_routes(db, get_api_key_dependency, get_correlation_id_dependency))
     router.include_router(create_skill_performance_routes(db, get_api_key_dependency, get_correlation_id_dependency))
     router.include_router(create_backtest_routes(db, get_api_key_dependency, get_correlation_id_dependency))
+    router.include_router(create_curator_observation_routes(db, get_api_key_dependency, get_correlation_id_dependency))
     return router
