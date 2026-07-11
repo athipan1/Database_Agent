@@ -33,7 +33,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
-      - name: Run focused bucket sync tests
+      - name: Run first-failure diagnostics
         env:
           POSTGRES_USER: trading_user
           POSTGRES_PASSWORD: your_strong_password_here
@@ -42,4 +42,4 @@ jobs:
           POSTGRES_PORT: 5432
           DATABASE_AGENT_API_KEY: test_database_key
           DATABASE_DEV_MODE: "true"
-        run: python -m pytest tests/test_broker_sync_repository.py -x -vv
+        run: python -m pytest -x -q --tb=short
