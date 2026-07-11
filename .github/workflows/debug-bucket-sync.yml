@@ -42,4 +42,19 @@ jobs:
           POSTGRES_PORT: 5432
           DATABASE_AGENT_API_KEY: test_database_key
           DATABASE_DEV_MODE: "true"
-        run: python -m pytest -x -q --tb=short
+        run: |
+          set +e
+          python -m pytest -x -q --tb=short > pytest-output.txt 2>&1
+          status=$?
+          echo "$status" > pytest-status.txt
+          cat pytest-output.txt
+          exit "$status"
+      - name: Upload pytest diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bucket-sync-pytest-diagnostics
+          path: |
+            pytest-output.txt
+            pytest-status.txt
+          if-no-files-found: error
