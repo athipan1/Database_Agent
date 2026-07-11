@@ -31,10 +31,18 @@ class SQLiteRouteTestDB:
 
     def setup_database(self):
         cur = self.conn.cursor()
-        cur.execute("CREATE TABLE accounts (account_id INTEGER PRIMARY KEY, account_name TEXT NOT NULL UNIQUE, cash_balance TEXT NOT NULL)")
-        cur.execute("CREATE TABLE positions (position_id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL, symbol TEXT NOT NULL, quantity BIGINT NOT NULL, average_cost TEXT NOT NULL, UNIQUE (account_id, symbol))")
-        cur.execute("CREATE TABLE orders (order_id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id TEXT NOT NULL UNIQUE, account_id INTEGER NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL, order_type TEXT NOT NULL, quantity BIGINT NOT NULL, price TEXT, time_in_force TEXT DEFAULT 'GTC', status TEXT NOT NULL, broker_order_id TEXT, reason TEXT, executed_quantity BIGINT DEFAULT 0, avg_execution_price TEXT, executed_at TEXT, correlation_id TEXT, timestamp TEXT DEFAULT CURRENT_TIMESTAMP, client_order_id TEXT UNIQUE, failure_reason TEXT)")
-        cur.execute("INSERT INTO accounts (account_id, account_name, cash_balance) VALUES (1, 'main_account', '1000000.00')")
+        cur.execute(
+            "CREATE TABLE accounts (account_id INTEGER PRIMARY KEY, account_name TEXT NOT NULL UNIQUE, cash_balance TEXT NOT NULL)"
+        )
+        cur.execute(
+            "CREATE TABLE positions (position_id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL, symbol TEXT NOT NULL, quantity BIGINT NOT NULL, average_cost TEXT NOT NULL, UNIQUE (account_id, symbol))"
+        )
+        cur.execute(
+            "CREATE TABLE orders (order_id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id TEXT NOT NULL UNIQUE, account_id INTEGER NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL, order_type TEXT NOT NULL, quantity BIGINT NOT NULL, price TEXT, time_in_force TEXT DEFAULT 'GTC', status TEXT NOT NULL, broker_order_id TEXT, reason TEXT, executed_quantity BIGINT DEFAULT 0, avg_execution_price TEXT, executed_at TEXT, correlation_id TEXT, timestamp TEXT DEFAULT CURRENT_TIMESTAMP, client_order_id TEXT UNIQUE, failure_reason TEXT)"
+        )
+        cur.execute(
+            "INSERT INTO accounts (account_id, account_name, cash_balance) VALUES (1, 'main_account', '1000000.00')"
+        )
         self.conn.commit()
 
 
@@ -58,18 +66,41 @@ def test_setup_broker_sync_tables_registers_status_and_snapshot_routes(monkeypat
 
 
 def test_broker_sync_snapshot_route_captures_snapshot(monkeypatch):
-    app, db = _register_routes(monkeypatch)
+    app, _ = _register_routes(monkeypatch)
     client = TestClient(app)
 
-    response = client.post("/broker-sync/snapshot", json={
-        "account_id": 1,
-        "broker": "ALPACA",
-        "paper": True,
-        "account": {"cash": "93276.77", "equity": "103313.29"},
-        "positions": [{"symbol": "ADBE", "qty": "52", "avg_entry_price": "198.76", "current_price": "193.01", "market_value": "10036.52"}],
-        "open_orders": [{"id": "stop-adbe", "symbol": "ADBE", "side": "sell", "qty": "52", "type": "stop", "status": "new", "stop_price": "190.12"}],
-        "summary": {"position_count": 1, "open_order_count": 1},
-    })
+    response = client.post(
+        "/broker-sync/snapshot",
+        json={
+            "account_id": 1,
+            "broker": "ALPACA",
+            "paper": True,
+            "account": {"cash": "93276.77", "equity": "103313.29"},
+            "positions": [
+                {
+                    "symbol": "ADBE",
+                    "qty": "52",
+                    "avg_entry_price": "198.76",
+                    "current_price": "193.01",
+                    "market_value": "10036.52",
+                    "strategy_bucket": "value_rebound",
+                }
+            ],
+            "open_orders": [
+                {
+                    "id": "stop-adbe",
+                    "symbol": "ADBE",
+                    "side": "sell",
+                    "qty": "52",
+                    "type": "stop",
+                    "status": "new",
+                    "stop_price": "190.12",
+                    "strategy_bucket": "value_rebound",
+                }
+            ],
+            "summary": {"position_count": 1, "open_order_count": 1},
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -82,3 +113,6 @@ def test_broker_sync_snapshot_route_captures_snapshot(monkeypatch):
     assert status["mismatch"]["is_synced"] is True
     assert status["database"]["position_count"] == 1
     assert status["database"]["open_order_count"] == 1
+    assert status["database"]["strategy_bucket_assignment_count"] == 1
+    assert status["database"]["strategy_bucket_assignments"][0]["symbol"] == "ADBE"
+    assert status["database"]["strategy_bucket_assignments"][0]["strategy_bucket"] == "value_rebound"
