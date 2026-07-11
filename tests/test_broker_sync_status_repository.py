@@ -29,14 +29,17 @@ class SQLiteStatusTestDB:
 
     def setup_database(self):
         cur = self.conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             CREATE TABLE accounts (
                 account_id INTEGER PRIMARY KEY,
                 account_name TEXT NOT NULL UNIQUE,
                 cash_balance TEXT NOT NULL
             )
-        """)
-        cur.execute("""
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE positions (
                 position_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id INTEGER NOT NULL,
@@ -46,8 +49,10 @@ class SQLiteStatusTestDB:
                 strategy_bucket TEXT DEFAULT 'unassigned',
                 UNIQUE (account_id, symbol)
             )
-        """)
-        cur.execute("""
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE orders (
                 order_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 trade_id TEXT NOT NULL UNIQUE,
@@ -71,8 +76,11 @@ class SQLiteStatusTestDB:
                 client_order_id TEXT UNIQUE,
                 failure_reason TEXT
             )
-        """)
-        cur.execute("INSERT INTO accounts (account_id, account_name, cash_balance) VALUES (1, 'main_account', '1000000.00')")
+            """
+        )
+        cur.execute(
+            "INSERT INTO accounts (account_id, account_name, cash_balance) VALUES (1, 'main_account', '1000000.00')"
+        )
         self.conn.commit()
 
 
@@ -83,10 +91,28 @@ def broker_state():
         "broker": "ALPACA",
         "paper": True,
         "captured_at": "2026-06-22T15:37:04Z",
-        "account": {"cash": "-100223.4", "buying_power": "3827.07", "equity": "102016.81"},
+        "account": {
+            "cash": "-100223.4",
+            "buying_power": "3827.07",
+            "equity": "102016.81",
+        },
         "positions": [
-            {"symbol": "AAPL", "qty": "1", "avg_entry_price": "254.48", "current_price": "300.3", "market_value": "300.3"},
-            {"symbol": "ACGL", "qty": "2190", "avg_entry_price": "91.31", "current_price": "92.21", "market_value": "201939.9"},
+            {
+                "symbol": "AAPL",
+                "qty": "1",
+                "avg_entry_price": "254.48",
+                "current_price": "300.3",
+                "market_value": "300.3",
+                "strategy_bucket": "core_dividend",
+            },
+            {
+                "symbol": "ACGL",
+                "qty": "2190",
+                "avg_entry_price": "91.31",
+                "current_price": "92.21",
+                "market_value": "201939.9",
+                "strategy_bucket": "quality_growth",
+            },
         ],
         "open_orders": [],
         "summary": {"position_count": 2, "open_order_count": 0, "cash_negative": True},
@@ -102,10 +128,12 @@ def test_broker_sync_status_reports_synced_after_sync():
     assert status["has_snapshot"] is True
     assert status["database"]["position_count"] == 2
     assert status["database"]["open_order_count"] == 0
+    assert status["database"]["strategy_bucket_assignment_count"] == 2
     assert status["mismatch"]["is_synced"] is True
     assert status["mismatch"]["mismatch_count"] == 0
     assert status["mismatch"]["summary"]["status"] == "synced"
     assert status["mismatch"]["diagnostics"]["positions"]["matches"] is True
+    assert status["mismatch"]["diagnostics"]["strategy_buckets"]["unassigned_positions"] == []
     assert status["latest_snapshot"]["summary"]["position_count"] == 2
 
 
@@ -125,7 +153,15 @@ def test_broker_sync_status_reports_position_and_order_diagnostics():
     db = SQLiteStatusTestDB()
     state = broker_state()
     state["open_orders"] = [
-        {"id": "broker-order-1", "symbol": "AAPL", "side": "sell", "qty": "1", "type": "stop", "status": "new", "stop_price": "250"}
+        {
+            "id": "broker-order-1",
+            "symbol": "AAPL",
+            "side": "sell",
+            "qty": "1",
+            "type": "stop",
+            "status": "new",
+            "stop_price": "250",
+        }
     ]
     sync_broker_state(db, state)
 

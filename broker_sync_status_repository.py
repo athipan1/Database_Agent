@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from broker_sync_diagnostics import broker_sync_diagnostics, broker_sync_summary
 
-
 BUCKET_TARGETS = {
     "core_dividend": Decimal("0.50"),
+    "quality_growth": Decimal("0.00"),
     "value_rebound": Decimal("0.30"),
     "news_momentum": Decimal("0.20"),
     "unassigned": Decimal("0.00"),
@@ -66,22 +66,29 @@ def _jsonable(value: Any) -> Any:
 def _table_exists(cursor, db, table: str) -> bool:
     if db.db_type == "sqlite":
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
-    else:
-        cursor.execute("SELECT to_regclass(%s)", (table,))
-    return cursor.fetchone() is not None
+        return cursor.fetchone() is not None
+    cursor.execute("SELECT to_regclass(%s) AS table_name", (table,))
+    row = cursor.fetchone()
+    if not row:
+        return False
+    item = dict(row) if not isinstance(row, tuple) else {"table_name": row[0]}
+    return bool(item.get("table_name"))
 
 
 def _latest_snapshot(cursor, db, account_id: int) -> Dict[str, Any]:
     if not _table_exists(cursor, db, "broker_sync_snapshots"):
         return {}
     p = _param(db)
-    cursor.execute(f"""
+    cursor.execute(
+        f"""
         SELECT *
         FROM broker_sync_snapshots
         WHERE account_id = {p}
         ORDER BY created_at DESC, snapshot_id DESC
         LIMIT 1
-    """, (account_id,))
+        """,
+        (account_id,),
+    )
     row = _row_to_dict(cursor.fetchone())
     if not row:
         return {}
@@ -101,29 +108,59 @@ def _latest_snapshot(cursor, db, account_id: int) -> Dict[str, Any]:
 
 def _account(cursor, db, account_id: int) -> Dict[str, Any]:
     p = _param(db)
-    cursor.execute(f"SELECT account_id, account_name, cash_balance FROM accounts WHERE account_id = {p}", (account_id,))
+    cursor.execute(
+        f"SELECT account_id, account_name, cash_balance FROM accounts WHERE account_id = {p}",
+        (account_id,),
+    )
     return _row_to_dict(cursor.fetchone())
 
 
 def _positions(cursor, db, account_id: int) -> List[Dict[str, Any]]:
     p = _param(db)
-    cursor.execute(f"SELECT * FROM positions WHERE account_id = {p} ORDER BY symbol", (account_id,))
+    cursor.execute(
+        f"SELECT * FROM positions WHERE account_id = {p} ORDER BY symbol",
+        (account_id,),
+    )
     return [_row_to_dict(row) for row in cursor.fetchall()]
 
 
 def _orders(cursor, db, account_id: int) -> List[Dict[str, Any]]:
     p = _param(db)
-    cursor.execute(f"""
+    cursor.execute(
+        f"""
         SELECT *
         FROM orders
         WHERE account_id = {p}
           AND status IN ('pending', 'placed', 'partially_filled')
         ORDER BY timestamp DESC, order_id DESC
-    """, (account_id,))
+        """,
+        (account_id,),
+    )
     return [_row_to_dict(row) for row in cursor.fetchall()]
 
 
-def _symbol_qty_map(positions: List[Dict[str, Any]], *, symbol_key: str = "symbol", qty_keys: tuple[str, ...] = ("quantity", "qty")) -> Dict[str, str]:
+def _assignments(cursor, db, account_id: int) -> List[Dict[str, Any]]:
+    if not _table_exists(cursor, db, "strategy_bucket_assignments"):
+        return []
+    p = _param(db)
+    cursor.execute(
+        f"""
+        SELECT account_id, symbol, strategy_bucket, source, reason, updated_at
+        FROM strategy_bucket_assignments
+        WHERE account_id = {p}
+        ORDER BY symbol
+        """,
+        (account_id,),
+    )
+    return [_row_to_dict(row) for row in cursor.fetchall()]
+
+
+def _symbol_qty_map(
+    positions: List[Dict[str, Any]],
+    *,
+    symbol_key: str = "symbol",
+    qty_keys: tuple[str, ...] = ("quantity", "qty"),
+) -> Dict[str, str]:
     result: Dict[str, str] = {}
     for item in positions or []:
         symbol = str(item.get(symbol_key) or "").upper()
@@ -152,7 +189,12 @@ def _open_order_id_set(rows: List[Dict[str, Any]], key_fn) -> set[str]:
 
 def _strategy_bucket(item: Dict[str, Any]) -> str:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-    bucket = str(item.get("strategy_bucket") or item.get("bucket") or metadata.get("strategy_bucket") or "unassigned").strip().lower()
+    bucket = str(
+        item.get("strategy_bucket")
+        or item.get("bucket")
+        or metadata.get("strategy_bucket")
+        or "unassigned"
+    ).strip().lower()
     return bucket if bucket in BUCKET_TARGETS else "unassigned"
 
 
@@ -161,12 +203,22 @@ def _position_value(item: Dict[str, Any]) -> Decimal:
     if market_value:
         return abs(market_value)
     qty = _decimal(item.get("quantity") or item.get("qty"))
-    price = _decimal(item.get("current_market_price") or item.get("current_price") or item.get("average_cost") or item.get("avg_entry_price"))
+    price = _decimal(
+        item.get("current_market_price")
+        or item.get("current_price")
+        or item.get("average_cost")
+        or item.get("avg_entry_price")
+    )
     return abs(qty * price)
 
 
 def _bucket_exposure(positions: List[Dict[str, Any]], account: Dict[str, Any]) -> Dict[str, Any]:
-    equity = _decimal(account.get("equity") or account.get("portfolio_value") or account.get("cash_balance") or account.get("cash"))
+    equity = _decimal(
+        account.get("equity")
+        or account.get("portfolio_value")
+        or account.get("cash_balance")
+        or account.get("cash")
+    )
     buckets: Dict[str, Dict[str, Any]] = {
         name: {
             "target_weight": str(target),
@@ -188,12 +240,45 @@ def _bucket_exposure(positions: List[Dict[str, Any]], account: Dict[str, Any]) -
         data["exposure"] = str(exposure.quantize(Decimal("0.01")))
         data["current_weight"] = str((exposure / equity).quantize(Decimal("0.0001"))) if equity else "0"
         target = BUCKET_TARGETS[bucket]
-        data["remaining_to_target"] = str(((equity * target) - exposure).quantize(Decimal("0.01"))) if equity else "0.00"
-        data["symbols"] = [{"symbol": row["symbol"], "exposure": str(row["exposure"].quantize(Decimal("0.01")))} for row in data["symbols"]]
+        data["remaining_to_target"] = (
+            str(((equity * target) - exposure).quantize(Decimal("0.01"))) if equity else "0.00"
+        )
+        data["symbols"] = [
+            {
+                "symbol": row["symbol"],
+                "exposure": str(row["exposure"].quantize(Decimal("0.01"))),
+            }
+            for row in data["symbols"]
+        ]
     return {"equity_basis": str(equity), "buckets": buckets}
 
 
-def _mismatch_report(db_account: Dict[str, Any], db_positions: List[Dict[str, Any]], db_orders: List[Dict[str, Any]], snapshot: Dict[str, Any]) -> Dict[str, Any]:
+def _bucket_map(rows: List[Dict[str, Any]]) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    for row in rows or []:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol:
+            result[symbol] = _strategy_bucket(row)
+    return result
+
+
+def _assignment_map(assignments: List[Dict[str, Any]]) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    for row in assignments or []:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        bucket = _strategy_bucket(row)
+        if symbol and bucket != "unassigned":
+            result[symbol] = bucket
+    return result
+
+
+def _mismatch_report(
+    db_account: Dict[str, Any],
+    db_positions: List[Dict[str, Any]],
+    db_orders: List[Dict[str, Any]],
+    assignments: List[Dict[str, Any]],
+    snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
     broker_account = snapshot.get("account") or {}
     broker_positions = snapshot.get("positions") or []
     broker_orders = snapshot.get("open_orders") or []
@@ -201,23 +286,110 @@ def _mismatch_report(db_account: Dict[str, Any], db_positions: List[Dict[str, An
     broker_position_map = _symbol_qty_map(broker_positions, qty_keys=("qty", "quantity"))
     db_order_ids = _open_order_id_set(db_orders, _db_order_key)
     broker_order_ids = _open_order_id_set(broker_orders, _broker_order_key)
+    db_position_buckets = _bucket_map(db_positions)
+    db_order_buckets = _bucket_map(db_orders)
+    canonical_buckets = _assignment_map(assignments)
+
     mismatches: List[Dict[str, Any]] = []
     if broker_account:
         db_cash = _money(db_account.get("cash_balance"))
         broker_cash = _money(broker_account.get("cash"))
         if db_cash != broker_cash:
-            mismatches.append({"field": "cash_balance", "database": str(db_cash), "broker": str(broker_cash)})
+            mismatches.append(
+                {"field": "cash_balance", "database": str(db_cash), "broker": str(broker_cash)}
+            )
     if db_position_map != broker_position_map:
-        mismatches.append({"field": "positions", "database": db_position_map, "broker": broker_position_map})
+        mismatches.append(
+            {"field": "positions", "database": db_position_map, "broker": broker_position_map}
+        )
     if db_order_ids != broker_order_ids:
-        mismatches.append({"field": "open_order_ids", "database": sorted(db_order_ids), "broker": sorted(broker_order_ids)})
+        mismatches.append(
+            {
+                "field": "open_order_ids",
+                "database": sorted(db_order_ids),
+                "broker": sorted(broker_order_ids),
+            }
+        )
+
+    unassigned_positions = sorted(
+        symbol for symbol, bucket in db_position_buckets.items() if bucket == "unassigned"
+    )
+    if unassigned_positions:
+        mismatches.append(
+            {
+                "field": "unassigned_position_buckets",
+                "symbols": unassigned_positions,
+                "recommended_action": "configure_strategy_bucket_assignment",
+            }
+        )
+
+    unassigned_orders = sorted(
+        {
+            str(row.get("symbol") or "").upper()
+            for row in db_orders
+            if _strategy_bucket(row) == "unassigned" and row.get("symbol")
+        }
+    )
+    if unassigned_orders:
+        mismatches.append(
+            {
+                "field": "unassigned_open_order_buckets",
+                "symbols": unassigned_orders,
+                "recommended_action": "configure_strategy_bucket_assignment",
+            }
+        )
+
+    assignment_position_mismatches = [
+        {
+            "symbol": symbol,
+            "database_bucket": db_position_buckets.get(symbol),
+            "canonical_bucket": canonical_bucket,
+        }
+        for symbol, canonical_bucket in sorted(canonical_buckets.items())
+        if symbol in db_position_buckets and db_position_buckets.get(symbol) != canonical_bucket
+    ]
+    if assignment_position_mismatches:
+        mismatches.append(
+            {
+                "field": "position_strategy_bucket_assignments",
+                "mismatches": assignment_position_mismatches,
+            }
+        )
+
+    assignment_order_mismatches = [
+        {
+            "symbol": symbol,
+            "database_bucket": db_order_buckets.get(symbol),
+            "canonical_bucket": canonical_bucket,
+        }
+        for symbol, canonical_bucket in sorted(canonical_buckets.items())
+        if symbol in db_order_buckets and db_order_buckets.get(symbol) != canonical_bucket
+    ]
+    if assignment_order_mismatches:
+        mismatches.append(
+            {
+                "field": "open_order_strategy_bucket_assignments",
+                "mismatches": assignment_order_mismatches,
+            }
+        )
+
     mismatch_count = len(mismatches)
     has_snapshot = bool(snapshot)
+    diagnostics = broker_sync_diagnostics(db_account, db_positions, db_orders, snapshot)
+    diagnostics["strategy_buckets"] = {
+        "canonical_assignments": canonical_buckets,
+        "database_positions": db_position_buckets,
+        "database_open_orders": db_order_buckets,
+        "unassigned_positions": unassigned_positions,
+        "unassigned_open_orders": unassigned_orders,
+        "assignment_position_mismatches": assignment_position_mismatches,
+        "assignment_order_mismatches": assignment_order_mismatches,
+    }
     return {
         "is_synced": mismatch_count == 0 and has_snapshot,
         "mismatch_count": mismatch_count,
         "mismatches": mismatches,
-        "diagnostics": broker_sync_diagnostics(db_account, db_positions, db_orders, snapshot),
+        "diagnostics": diagnostics,
         "summary": broker_sync_summary(has_snapshot=has_snapshot, mismatch_count=mismatch_count),
     }
 
@@ -230,23 +402,34 @@ def broker_sync_status(db, account_id: int = 1) -> Dict[str, Any]:
             account = _account(cursor, db, account_id)
             positions = _positions(cursor, db, account_id)
             open_orders = _orders(cursor, db, account_id)
-            mismatch = _mismatch_report(account, positions, open_orders, snapshot)
+            assignments = _assignments(cursor, db, account_id)
+            mismatch = _mismatch_report(
+                account,
+                positions,
+                open_orders,
+                assignments,
+                snapshot,
+            )
             account_for_exposure = dict(account or {})
             if snapshot.get("account"):
                 account_for_exposure.update(snapshot.get("account") or {})
-            return _jsonable({
-                "account_id": account_id,
-                "has_snapshot": bool(snapshot),
-                "latest_snapshot": snapshot,
-                "database": {
-                    "account": account,
-                    "positions": positions,
-                    "open_orders": open_orders,
-                    "position_count": len(positions),
-                    "open_order_count": len(open_orders),
-                },
-                "bucket_exposure": _bucket_exposure(positions, account_for_exposure),
-                "mismatch": mismatch,
-            })
+            return _jsonable(
+                {
+                    "account_id": account_id,
+                    "has_snapshot": bool(snapshot),
+                    "latest_snapshot": snapshot,
+                    "database": {
+                        "account": account,
+                        "positions": positions,
+                        "open_orders": open_orders,
+                        "strategy_bucket_assignments": assignments,
+                        "position_count": len(positions),
+                        "open_order_count": len(open_orders),
+                        "strategy_bucket_assignment_count": len(assignments),
+                    },
+                    "bucket_exposure": _bucket_exposure(positions, account_for_exposure),
+                    "mismatch": mismatch,
+                }
+            )
         finally:
             cursor.close()
