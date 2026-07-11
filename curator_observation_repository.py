@@ -164,7 +164,9 @@ def create_curator_observation(
 
     now = datetime.now(timezone.utc)
     record = CuratorObservation(
-        **body.model_dump(exclude={"observation_id", "observed_at"}),
+        **body.model_dump(
+            exclude={"observation_id", "correlation_id", "observed_at"}
+        ),
         observation_id=observation_id,
         correlation_id=body.correlation_id or correlation_id,
         observed_at=body.observed_at or now,
