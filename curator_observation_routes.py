@@ -16,7 +16,6 @@ from curator_observation_repository import (
     create_curator_observation_batch,
     get_curator_observation,
     list_curator_observations,
-    setup_curator_observation_table,
 )
 
 
@@ -46,7 +45,6 @@ def create_curator_observation_routes(
     get_api_key_dependency,
     get_correlation_id_dependency,
 ) -> APIRouter:
-    setup_curator_observation_table(db)
     router = APIRouter(tags=["curator-observations"])
     api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
