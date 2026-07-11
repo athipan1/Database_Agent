@@ -1,7 +1,7 @@
 import sqlite3
 from contextlib import contextmanager
-from decimal import Decimal
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from broker_sync_repository import sync_broker_state
 from broker_sync_status_repository import broker_sync_status
@@ -36,14 +36,17 @@ class SQLiteBrokerSyncTestDB:
 
     def setup_database(self):
         cur = self.conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             CREATE TABLE accounts (
                 account_id INTEGER PRIMARY KEY,
                 account_name TEXT NOT NULL UNIQUE,
                 cash_balance TEXT NOT NULL
             )
-        """)
-        cur.execute("""
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE positions (
                 position_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id INTEGER NOT NULL,
@@ -52,8 +55,10 @@ class SQLiteBrokerSyncTestDB:
                 average_cost TEXT NOT NULL,
                 UNIQUE (account_id, symbol)
             )
-        """)
-        cur.execute("""
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE orders (
                 order_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 trade_id TEXT NOT NULL UNIQUE,
@@ -75,8 +80,11 @@ class SQLiteBrokerSyncTestDB:
                 client_order_id TEXT UNIQUE,
                 failure_reason TEXT
             )
-        """)
-        cur.execute("INSERT INTO accounts (account_id, account_name, cash_balance) VALUES (1, 'main_account', '1000000.00')")
+            """
+        )
+        cur.execute(
+            "INSERT INTO accounts (account_id, account_name, cash_balance) VALUES (1, 'main_account', '1000000.00')"
+        )
         self.conn.commit()
 
     def get_account_balance(self, account_id):
@@ -95,6 +103,14 @@ class SQLiteBrokerSyncTestDB:
         cur.execute("SELECT * FROM orders WHERE account_id = ? ORDER BY symbol", (account_id,))
         return [dict(row) for row in cur.fetchall()]
 
+    def get_assignments(self, account_id):
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT * FROM strategy_bucket_assignments WHERE account_id = ? ORDER BY symbol",
+            (account_id,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
 
 def broker_state(open_orders=None):
     return {
@@ -111,12 +127,36 @@ def broker_state(open_orders=None):
             "portfolio_value": "103607.62",
         },
         "positions": [
-            {"symbol": "ADBE", "qty": "52", "avg_entry_price": "198.76", "current_price": "198.67", "market_value": "10330.84"},
+            {
+                "symbol": "ADBE",
+                "qty": "52",
+                "avg_entry_price": "198.76",
+                "current_price": "198.67",
+                "market_value": "10330.84",
+            },
         ],
-        "open_orders": open_orders if open_orders is not None else [
-            {"id": "stop-adbe", "symbol": "ADBE", "side": "sell", "qty": "52", "filled_qty": "0", "type": "stop", "time_in_force": "gtc", "status": "new", "submitted_at": "2026-06-24T16:01:39Z", "stop_price": "190.12"},
+        "open_orders": open_orders
+        if open_orders is not None
+        else [
+            {
+                "id": "stop-adbe",
+                "symbol": "ADBE",
+                "side": "sell",
+                "qty": "52",
+                "filled_qty": "0",
+                "type": "stop",
+                "time_in_force": "gtc",
+                "status": "new",
+                "submitted_at": "2026-06-24T16:01:39Z",
+                "stop_price": "190.12",
+            },
         ],
-        "summary": {"position_count": 1, "open_order_count": 1, "buying_power_unavailable": False, "cash_negative": False},
+        "summary": {
+            "position_count": 1,
+            "open_order_count": 1,
+            "buying_power_unavailable": False,
+            "cash_negative": False,
+        },
     }
 
 
@@ -146,13 +186,17 @@ def test_sync_broker_state_preserves_existing_position_bucket_when_broker_has_no
     sync_broker_state(db, broker_state())
 
     cur = db.conn.cursor()
-    cur.execute("UPDATE positions SET strategy_bucket = ? WHERE symbol = ?", ("core_dividend", "ADBE"))
+    cur.execute(
+        "UPDATE positions SET strategy_bucket = ?, strategy_bucket_source = ? WHERE symbol = ?",
+        ("core_dividend", "manual_test", "ADBE"),
+    )
     db.conn.commit()
 
     sync_broker_state(db, broker_state())
 
     positions_by_symbol = {p["symbol"]: p for p in db.get_positions(1)}
     assert positions_by_symbol["ADBE"]["strategy_bucket"] == "core_dividend"
+    assert db.get_assignments(1)[0]["strategy_bucket"] == "core_dividend"
 
 
 def test_sync_broker_state_preserves_existing_order_bucket_when_broker_has_none():
@@ -160,13 +204,19 @@ def test_sync_broker_state_preserves_existing_order_bucket_when_broker_has_none(
     sync_broker_state(db, broker_state())
 
     cur = db.conn.cursor()
-    cur.execute("UPDATE orders SET strategy_bucket = ? WHERE broker_order_id = ?", ("core_dividend", "stop-adbe"))
+    cur.execute(
+        "UPDATE orders SET strategy_bucket = ? WHERE broker_order_id = ?",
+        ("core_dividend", "stop-adbe"),
+    )
     db.conn.commit()
 
     sync_broker_state(db, broker_state())
 
-    orders_by_broker_id = {order["broker_order_id"]: order for order in db.get_orders(1)}
+    orders_by_broker_id = {
+        order["broker_order_id"]: order for order in db.get_orders(1)
+    }
     assert orders_by_broker_id["stop-adbe"]["strategy_bucket"] == "core_dividend"
+    assert db.get_assignments(1)[0]["strategy_bucket"] == "core_dividend"
 
 
 def test_sync_broker_state_prefers_explicit_broker_bucket_over_existing_bucket():
@@ -174,31 +224,110 @@ def test_sync_broker_state_prefers_explicit_broker_bucket_over_existing_bucket()
     sync_broker_state(db, broker_state())
 
     cur = db.conn.cursor()
-    cur.execute("UPDATE positions SET strategy_bucket = ? WHERE symbol = ?", ("core_dividend", "ADBE"))
-    cur.execute("UPDATE orders SET strategy_bucket = ? WHERE broker_order_id = ?", ("core_dividend", "stop-adbe"))
+    cur.execute(
+        "UPDATE positions SET strategy_bucket = ? WHERE symbol = ?",
+        ("core_dividend", "ADBE"),
+    )
+    cur.execute(
+        "UPDATE orders SET strategy_bucket = ? WHERE broker_order_id = ?",
+        ("core_dividend", "stop-adbe"),
+    )
     db.conn.commit()
 
-    updated = broker_state(open_orders=[
-        {
-            "id": "stop-adbe",
-            "symbol": "ADBE",
-            "side": "sell",
-            "qty": "52",
-            "filled_qty": "0",
-            "type": "stop",
-            "time_in_force": "gtc",
-            "status": "new",
-            "submitted_at": "2026-06-24T16:01:39Z",
-            "stop_price": "190.12",
-            "strategy_bucket": "value_rebound",
-        },
-    ])
+    updated = broker_state(
+        open_orders=[
+            {
+                "id": "stop-adbe",
+                "symbol": "ADBE",
+                "side": "sell",
+                "qty": "52",
+                "filled_qty": "0",
+                "type": "stop",
+                "time_in_force": "gtc",
+                "status": "new",
+                "submitted_at": "2026-06-24T16:01:39Z",
+                "stop_price": "190.12",
+                "strategy_bucket": "value_rebound",
+            },
+        ]
+    )
     updated["positions"][0]["strategy_bucket"] = "value_rebound"
 
     sync_broker_state(db, updated)
 
     assert db.get_positions(1)[0]["strategy_bucket"] == "value_rebound"
     assert db.get_orders(1)[0]["strategy_bucket"] == "value_rebound"
+    assert db.get_assignments(1)[0]["strategy_bucket"] == "value_rebound"
+
+
+def test_cold_start_seed_restores_cinf_position_and_order_bucket(monkeypatch):
+    monkeypatch.setenv("STRATEGY_BUCKET_ASSIGNMENTS_JSON", "CINF=value_rebound")
+    db = SQLiteBrokerSyncTestDB()
+    state = broker_state(
+        open_orders=[
+            {
+                "id": "limit-cinf",
+                "symbol": "CINF",
+                "side": "sell",
+                "qty": "86",
+                "filled_qty": "0",
+                "type": "limit",
+                "time_in_force": "gtc",
+                "status": "new",
+                "submitted_at": "2026-07-10T16:01:39Z",
+                "limit_price": "193.46",
+            },
+        ]
+    )
+    state["positions"] = [
+        {
+            "symbol": "CINF",
+            "qty": "86",
+            "avg_entry_price": "119.54",
+            "current_price": "119.60",
+            "market_value": "10285.60",
+        }
+    ]
+
+    sync_broker_state(db, state)
+
+    assert db.get_positions(1)[0]["strategy_bucket"] == "value_rebound"
+    assert db.get_positions(1)[0]["strategy_bucket_source"] == "canonical_assignment"
+    assert db.get_orders(1)[0]["strategy_bucket"] == "value_rebound"
+    assert db.get_assignments(1)[0]["symbol"] == "CINF"
+    assert db.get_assignments(1)[0]["strategy_bucket"] == "value_rebound"
+
+    status = broker_sync_status(db, account_id=1)
+    assert status["mismatch"]["is_synced"] is True
+    assert status["mismatch"]["mismatch_count"] == 0
+    assert status["mismatch"]["diagnostics"]["strategy_buckets"]["unassigned_positions"] == []
+    assert status["database"]["strategy_bucket_assignment_count"] == 1
+
+
+def test_sync_status_flags_unassigned_held_positions_and_orders(monkeypatch):
+    monkeypatch.delenv("STRATEGY_BUCKET_ASSIGNMENTS_JSON", raising=False)
+    db = SQLiteBrokerSyncTestDB()
+    sync_broker_state(db, broker_state())
+
+    status = broker_sync_status(db, account_id=1)
+
+    assert status["mismatch"]["is_synced"] is False
+    mismatch_fields = {item["field"] for item in status["mismatch"]["mismatches"]}
+    assert "unassigned_position_buckets" in mismatch_fields
+    assert "unassigned_open_order_buckets" in mismatch_fields
+    assert status["mismatch"]["diagnostics"]["strategy_buckets"]["unassigned_positions"] == ["ADBE"]
+
+
+def test_quality_growth_is_not_collapsed_into_unassigned(monkeypatch):
+    monkeypatch.setenv("STRATEGY_BUCKET_ASSIGNMENTS_JSON", "ADBE=quality_growth")
+    db = SQLiteBrokerSyncTestDB()
+    sync_broker_state(db, broker_state())
+
+    status = broker_sync_status(db, account_id=1)
+
+    assert db.get_positions(1)[0]["strategy_bucket"] == "quality_growth"
+    assert "ADBE" in status["bucket_exposure"]["buckets"]["quality_growth"]["symbols"][0]["symbol"]
+    assert status["mismatch"]["is_synced"] is True
 
 
 def test_sync_broker_state_marks_missing_broker_orders_cancelled():
@@ -224,11 +353,15 @@ def test_sync_broker_state_records_snapshot():
     assert cur.fetchone()["count"] == 1
 
 
-def test_broker_sync_status_uses_canonical_cash_qty_and_broker_order_ids():
+def test_broker_sync_status_uses_canonical_cash_qty_and_broker_order_ids(monkeypatch):
+    monkeypatch.setenv("STRATEGY_BUCKET_ASSIGNMENTS_JSON", "ADBE=value_rebound")
     db = SQLiteBrokerSyncTestDB()
     sync_broker_state(db, broker_state())
     cur = db.conn.cursor()
-    cur.execute("UPDATE accounts SET cash_balance = ? WHERE account_id = ?", ("93276.78000", 1))
+    cur.execute(
+        "UPDATE accounts SET cash_balance = ? WHERE account_id = ?",
+        ("93276.78000", 1),
+    )
     db.conn.commit()
 
     status = broker_sync_status(db, account_id=1)
