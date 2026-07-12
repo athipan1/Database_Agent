@@ -355,6 +355,7 @@ def _insert_snapshot(cursor, db, account_id: int, state: Dict[str, Any]) -> None
 def sync_broker_state(db, broker_state: Dict[str, Any]) -> Dict[str, Any]:
     setup_broker_sync_tables(db)
     account_id = int(broker_state.get("account_id") or 1)
+    synced_at = _now(db)
     positions = broker_state.get("positions") or []
     open_orders = broker_state.get("open_orders") or []
     with db.connection_scope() as conn:
@@ -366,7 +367,14 @@ def sync_broker_state(db, broker_state: Dict[str, Any]) -> Dict[str, Any]:
             missing_marked = _mark_missing_orders(cursor, db, account_id, open_orders)
             _insert_snapshot(cursor, db, account_id, broker_state)
             conn.commit()
-            return {"account_id": account_id, "cash_balance": cash, "positions_synced": positions_synced, "open_orders_synced": open_orders_synced, "missing_open_orders_marked_cancelled": missing_marked}
+            return {
+                "account_id": account_id,
+                "cash_balance": cash,
+                "positions_synced": positions_synced,
+                "open_orders_synced": open_orders_synced,
+                "missing_open_orders_marked_cancelled": missing_marked,
+                "synced_at": synced_at,
+            }
         except Exception:
             conn.rollback()
             raise

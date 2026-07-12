@@ -1278,7 +1278,7 @@ async def create_signal_history_endpoint(
 
 ):
 
-    record = create_signal_record(db, body, correlation_id)
+    record = create_signal_record(db, body)
 
     return wrap_response(data=record)
 

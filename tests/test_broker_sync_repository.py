@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from broker_sync_repository import sync_broker_state
 from broker_sync_status_repository import broker_sync_status
+from models import BrokerSyncResult
 
 
 class SQLiteBrokerSyncTestDB:
@@ -168,6 +169,7 @@ def test_sync_broker_state_updates_cash_positions_and_open_orders():
     assert result["cash_balance"] == Decimal("93276.78")
     assert result["positions_synced"] == 1
     assert result["open_orders_synced"] == 1
+    assert BrokerSyncResult(**result).synced_at is not None
     assert db.get_account_balance(1) == Decimal("93276.78")
 
     positions_by_symbol = {p["symbol"]: p for p in db.get_positions(1)}
