@@ -767,6 +767,10 @@ class TradingDB:
             finally:
                 cursor.close()
 
+    def get_orders(self, account_id: Union[int, str]) -> List[Dict[str, Any]]:
+        """Return the account's orders using the canonical database-client name."""
+        return self.get_order_history(account_id)
+
     def get_executions(self, account_id: Union[int, str], limit: int = 50, offset: int = 0, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
         with self.connection_scope() as conn:
             cursor = self.get_cursor(conn)
@@ -812,6 +816,10 @@ class TradingDB:
                 return trades
             finally:
                 cursor.close()
+
+    def get_trade_history(self, account_id: Union[int, str], limit: int = 50) -> List[Dict[str, Any]]:
+        """Return executed trades using the name exposed by the HTTP contract."""
+        return self.get_executions(account_id, limit=limit)
 
     def get_price_history(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> List[Dict[str, Any]]:
         # Try to get from Redis cache
