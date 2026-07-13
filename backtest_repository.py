@@ -146,6 +146,14 @@ def setup_backtest_tables(db) -> None:
                 );
                 """
             )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_backtest_runs_exact_lookup "
+                "ON backtest_runs(skill_id, strategy_id, symbol, timeframe, updated_at DESC)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_skill_backtest_results_run "
+                "ON skill_backtest_results(run_id, created_at DESC)"
+            )
             if db.db_type == "postgres":
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_market_data_bars_lookup ON market_data_bars(symbol, timeframe, bar_time)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_backtest_runs_skill ON backtest_runs(skill_id, symbol, timeframe, created_at DESC)")
@@ -555,6 +563,48 @@ def get_backtest_run_detail(db, run_id: str) -> Optional[BacktestRunDetail]:
             return BacktestRunDetail(run=run, trades=trades, equity_curve=equity_curve, skill_result=skill_result)
         finally:
             cursor.close()
+
+
+def get_latest_exact_backtest_run_detail(
+    db,
+    *,
+    skill_id: str,
+    strategy_id: str,
+    symbol: str,
+    timeframe: str,
+) -> Optional[BacktestRunDetail]:
+    """Return the latest run for one exact execution-evidence identity.
+
+    The lookup intentionally does not filter on pass/fail status. A newer
+    failed run must not be hidden by an older passing run; Manager/Risk can
+    inspect the returned skill result and fail closed.
+    """
+    with db.connection_scope() as conn:
+        cursor = db.get_cursor(conn)
+        try:
+            cursor.execute(
+                f"""
+                SELECT run_id
+                FROM backtest_runs
+                WHERE skill_id = {db.param_style}
+                  AND strategy_id = {db.param_style}
+                  AND symbol = {db.param_style}
+                  AND timeframe = {db.param_style}
+                ORDER BY updated_at DESC, created_at DESC, run_id DESC
+                LIMIT 1
+                """,
+                (
+                    skill_id.strip(),
+                    strategy_id.strip(),
+                    symbol.strip().upper(),
+                    timeframe.strip(),
+                ),
+            )
+            row = cursor.fetchone()
+            run_id = str(row[0]) if row else None
+        finally:
+            cursor.close()
+    return get_backtest_run_detail(db, run_id) if run_id else None
 
 
 def list_skill_backtests(db, skill_id: str, *, limit: int = 50) -> List[SkillBacktestResult]:

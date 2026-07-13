@@ -80,6 +80,29 @@ Current baseline:
 - `/ready` reports runtime readiness, trading mode, dev mode, emergency halt state, API key configuration, and live/dev-mode violations.
 - `/version` reports agent version, schema version, and API contract metadata.
 
+## Exact Backtest Evidence Lookup
+
+`GET /backtests/runs/latest` returns the newest Backtest run matching one exact
+execution-evidence identity. All four query parameters are required:
+
+- `skill_id`
+- `strategy_id`
+- `symbol` (normalized to uppercase)
+- `timeframe`
+
+Example:
+
+```http
+GET /backtests/runs/latest?skill_id=hourly-sma-crossover&strategy_id=hourly-sma-crossover&symbol=AAPL&timeframe=1d
+X-API-KEY: <database-agent-api-key>
+```
+
+The endpoint returns `404` when that exact tuple has no run and never falls
+back to another symbol, strategy, or timeframe. It returns the newest run even
+when that run failed, so callers cannot silently reuse an older passing result.
+The response is evidence only: Manager/Risk must still verify pass status and
+freshness before authorizing execution.
+
 ## Safety Rules
 
 1. `DATABASE_DEV_MODE=true` must not be used with `TRADING_MODE=LIVE`.

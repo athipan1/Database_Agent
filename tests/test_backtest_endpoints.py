@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backtest_routes import create_backtest_routes
+from backtest_repository import setup_backtest_tables
 from trading_db import TradingDB
 
 
@@ -134,3 +135,141 @@ def test_unknown_skill_backtest_status_is_not_backtested():
     data = response.json()["data"]
     assert data["status"] == "not_backtested"
     assert data["passed"] is False
+
+
+def _create_backtest_run(
+    client,
+    *,
+    run_id,
+    symbol,
+    strategy_id="strategy-alpha",
+    timeframe="1d",
+    updated_at="2026-03-01T00:00:00Z",
+    profit_factor=1.45,
+):
+    response = client.post(
+        "/backtests/runs",
+        headers=HEADERS,
+        json={
+            "run_id": run_id,
+            "skill_id": "skill-1",
+            "strategy_id": strategy_id,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "status": "completed",
+            "updated_at": updated_at,
+            "metrics": {
+                "win_rate": 0.55,
+                "profit_factor": profit_factor,
+                "max_drawdown": 0.12,
+                "total_trades": 24,
+            },
+        },
+    )
+    assert response.status_code == 200
+
+
+def test_latest_exact_backtest_lookup_matches_full_identity():
+    client = _build_client()
+    _create_backtest_run(
+        client,
+        run_id="aapl-old",
+        symbol="AAPL",
+        updated_at="2026-03-01T00:00:00Z",
+    )
+    _create_backtest_run(
+        client,
+        run_id="msft-newer",
+        symbol="MSFT",
+        updated_at="2026-03-03T00:00:00Z",
+    )
+    _create_backtest_run(
+        client,
+        run_id="aapl-wrong-strategy",
+        symbol="AAPL",
+        strategy_id="strategy-beta",
+        updated_at="2026-03-04T00:00:00Z",
+    )
+    _create_backtest_run(
+        client,
+        run_id="aapl-latest-exact",
+        symbol="aapl",
+        updated_at="2026-03-02T00:00:00Z",
+        profit_factor=0.8,
+    )
+
+    response = client.get(
+        "/backtests/runs/latest",
+        headers=HEADERS,
+        params={
+            "skill_id": "skill-1",
+            "strategy_id": "strategy-alpha",
+            "symbol": "aapl",
+            "timeframe": "1d",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data"]["run"]["run_id"] == "aapl-latest-exact"
+    assert payload["data"]["run"]["symbol"] == "AAPL"
+    assert payload["data"]["skill_result"]["passed"] is False
+    assert payload["metadata"]["exact_match"] is True
+    assert payload["metadata"]["symbol"] == "AAPL"
+
+
+def test_latest_exact_backtest_lookup_returns_404_instead_of_cross_symbol_fallback():
+    client = _build_client()
+    _create_backtest_run(client, run_id="aapl-only", symbol="AAPL")
+
+    response = client.get(
+        "/backtests/runs/latest",
+        headers=HEADERS,
+        params={
+            "skill_id": "skill-1",
+            "strategy_id": "strategy-alpha",
+            "symbol": "MSFT",
+            "timeframe": "1d",
+        },
+    )
+
+    assert response.status_code == 404
+    assert "symbol=MSFT" in response.json()["detail"]
+
+
+def test_latest_exact_backtest_lookup_requires_every_identity_field():
+    client = _build_client()
+
+    response = client.get(
+        "/backtests/runs/latest",
+        headers=HEADERS,
+        params={
+            "skill_id": "skill-1",
+            "strategy_id": "strategy-alpha",
+            "symbol": "AAPL",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_exact_backtest_lookup_indexes_are_created_for_sqlite():
+    db = TradingDB()
+    setup_backtest_tables(db)
+
+    with db.connection_scope() as conn:
+        cursor = db.get_cursor(conn)
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN (?, ?)",
+            (
+                "idx_backtest_runs_exact_lookup",
+                "idx_skill_backtest_results_run",
+            ),
+        )
+        names = {row[0] for row in cursor.fetchall()}
+        cursor.close()
+
+    assert names == {
+        "idx_backtest_runs_exact_lookup",
+        "idx_skill_backtest_results_run",
+    }

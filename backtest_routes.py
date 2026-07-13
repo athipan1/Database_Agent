@@ -10,6 +10,7 @@ from backtest_models import CreateBacktestRunBody, UpsertMarketDataBarsBody
 from backtest_repository import (
     create_backtest_run_detail,
     get_backtest_run_detail,
+    get_latest_exact_backtest_run_detail,
     get_skill_backtest_status,
     list_market_data_bars,
     list_skill_backtests,
@@ -112,6 +113,49 @@ def create_backtest_routes(db, get_api_key_dependency, get_correlation_id_depend
             data=detail.model_dump(mode="json"),
             correlation_id=correlation_id,
             metadata={"write_model": "backtest_runs", "safe_for_trading": False},
+        )
+
+    @router.get("/backtests/runs/latest", response_model=dict)
+    async def get_latest_exact_backtest_run_endpoint(
+        skill_id: str = Query(..., min_length=1),
+        strategy_id: str = Query(..., min_length=1),
+        symbol: str = Query(..., min_length=1),
+        timeframe: str = Query(..., min_length=1),
+        api_key: str = Depends(_api_key),
+        correlation_id: str = Depends(_correlation_id),
+    ):
+        _ensure_tables_ready()
+        detail = get_latest_exact_backtest_run_detail(
+            db,
+            skill_id=skill_id,
+            strategy_id=strategy_id,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
+        if not detail:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "No BacktestRun found for exact identity: "
+                    f"skill_id={skill_id.strip()} "
+                    f"strategy_id={strategy_id.strip()} "
+                    f"symbol={symbol.strip().upper()} "
+                    f"timeframe={timeframe.strip()}"
+                ),
+            )
+        return wrap_response(
+            data=detail.model_dump(mode="json"),
+            correlation_id=correlation_id,
+            metadata={
+                "lookup": "exact_backtest_identity_v1",
+                "exact_match": True,
+                "skill_id": skill_id.strip(),
+                "strategy_id": strategy_id.strip(),
+                "symbol": symbol.strip().upper(),
+                "timeframe": timeframe.strip(),
+                "safe_for_trading": False,
+                "note": "Manager/Risk must still enforce pass status and freshness.",
+            },
         )
 
     @router.get("/backtests/runs/{run_id}", response_model=dict)
