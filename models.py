@@ -97,6 +97,10 @@ class Position(CustomBaseModel):
     average_cost: Decimal
     current_market_price: Optional[Decimal] = None
     market_value: Optional[Decimal] = None
+    highest_price_since_entry: Optional[Decimal] = Field(
+        default=None,
+        description="Highest observed market price since the current position was opened",
+    )
     strategy_bucket: StrategyBucket = "unassigned"
 
 
