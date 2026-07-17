@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any, Dict, List
 
 from position_bucket_repository import setup_position_bucket_columns
+from position_peak_repository import highest_price_since_entry_for_sync, setup_position_peak_tracking
 from skill_trade_outcome_repository import create_skill_trade_outcome, setup_skill_trade_outcome_table
 
 try:
@@ -84,7 +85,8 @@ def _existing_position_buckets(cursor, db, account_id: int) -> Dict[str, Dict[st
     try:
         cursor.execute(
             f"""
-            SELECT symbol, strategy_bucket, strategy_bucket_source, strategy_bucket_reason, strategy_bucket_updated_at
+            SELECT symbol, strategy_bucket, strategy_bucket_source, strategy_bucket_reason,
+                   strategy_bucket_updated_at, highest_price_since_entry
             FROM positions WHERE account_id = {p}
             """,
             (account_id,),
@@ -211,6 +213,7 @@ def setup_broker_sync_tables(db) -> None:
             raise
         finally:
             cursor.close()
+    setup_position_peak_tracking(db)
     setup_position_bucket_columns(db)
     setup_skill_trade_outcome_table(db)
     _register_status_route(db)
@@ -252,6 +255,11 @@ def _replace_positions(cursor, db, account_id: int, positions: List[Dict[str, An
         current_price = _decimal(item.get("current_price"), average_cost)
         market_value = _decimal(item.get("market_value"), Decimal(quantity) * current_price)
         existing = existing_buckets.get(symbol, {})
+        highest_price_since_entry = highest_price_since_entry_for_sync(
+            entry_price=average_cost,
+            current_price=current_price,
+            existing_position=existing,
+        )
         strategy_bucket = _strategy_bucket_or_existing(item, existing)
         strategy_bucket_source = _strategy_bucket_source_or_existing(item, existing)
         strategy_bucket_reason = existing.get("strategy_bucket_reason") if isinstance(existing, dict) else None
@@ -260,11 +268,25 @@ def _replace_positions(cursor, db, account_id: int, positions: List[Dict[str, An
             f"""
             INSERT INTO positions (
                 account_id, symbol, quantity, average_cost, current_market_price, market_value,
-                strategy_bucket, strategy_bucket_source, strategy_bucket_reason, strategy_bucket_updated_at, broker_synced_at
+                highest_price_since_entry, strategy_bucket, strategy_bucket_source,
+                strategy_bucket_reason, strategy_bucket_updated_at, broker_synced_at
             )
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
             """,
-            (account_id, symbol, quantity, str(average_cost), str(current_price), str(market_value), strategy_bucket, strategy_bucket_source, strategy_bucket_reason, strategy_bucket_updated_at, synced_at),
+            (
+                account_id,
+                symbol,
+                quantity,
+                str(average_cost),
+                str(current_price),
+                str(market_value),
+                str(highest_price_since_entry),
+                strategy_bucket,
+                strategy_bucket_source,
+                strategy_bucket_reason,
+                strategy_bucket_updated_at,
+                synced_at,
+            ),
         )
         count += 1
     return count
