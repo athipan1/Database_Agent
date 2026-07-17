@@ -260,6 +260,7 @@ def _replace_positions(cursor, db, account_id: int, positions: List[Dict[str, An
             current_price=current_price,
             existing_position=existing,
         )
+        item["highest_price_since_entry"] = str(highest_price_since_entry)
         strategy_bucket = _strategy_bucket_or_existing(item, existing)
         strategy_bucket_source = _strategy_bucket_source_or_existing(item, existing)
         strategy_bucket_reason = existing.get("strategy_bucket_reason") if isinstance(existing, dict) else None
