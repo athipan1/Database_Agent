@@ -151,8 +151,10 @@ def test_broker_sync_keeps_highest_price_when_latest_price_falls():
     assert _peak(db) == Decimal("125")
 
     status = broker_sync_status(db, account_id=1)
-    status_position = status["database"]["positions"][0]
-    assert Decimal(str(status_position["highest_price_since_entry"])) == Decimal("125")
+    database_position = status["database"]["positions"][0]
+    snapshot_position = status["latest_snapshot"]["positions"][0]
+    assert Decimal(str(database_position["highest_price_since_entry"])) == Decimal("125")
+    assert Decimal(str(snapshot_position["highest_price_since_entry"])) == Decimal("125")
 
 
 def test_closed_position_reopens_with_a_fresh_entry_peak():
