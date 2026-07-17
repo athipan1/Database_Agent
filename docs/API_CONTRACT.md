@@ -80,6 +80,55 @@ Current baseline:
 - `/ready` reports runtime readiness, trading mode, dev mode, emergency halt state, API key configuration, and live/dev-mode violations.
 - `/version` reports agent version, schema version, and API contract metadata.
 
+## Position Price-Watermark Contract
+
+Every canonical position returned by `Database_Agent` includes:
+
+```json
+{
+  "account_id": 1,
+  "symbol": "AAPL",
+  "quantity": 10,
+  "average_cost": 100.0,
+  "current_market_price": 110.0,
+  "market_value": 1100.0,
+  "highest_price_since_entry": 125.0,
+  "strategy_bucket": "unassigned"
+}
+```
+
+The field is exposed by every endpoint that returns canonical position state:
+
+```http
+GET /accounts/{account_id}/positions
+GET /broker-sync/status
+```
+
+For `/broker-sync/status`, the field is present under both
+`data.database.positions[*]` and the enriched
+`data.latest_snapshot.positions[*]` payload.
+
+`highest_price_since_entry` has the following lifecycle contract:
+
+1. A newly opened position starts at its entry price (`average_cost`).
+2. When a newer market price is received, the stored value changes only when
+   that price is greater than the existing value. A lower price never reduces
+   the watermark.
+3. Broker synchronization preserves the existing watermark even though the
+   current implementation replaces the account's position rows per snapshot.
+4. When a position disappears from the broker snapshot, its row is deleted.
+   A later position for the same symbol is a new lifecycle and starts from the
+   new entry price.
+5. `Database_Agent` is the source of truth. Incoming clients must not overwrite
+   this field directly.
+6. Existing rows are migrated additively. A missing watermark is backfilled to
+   the greater of the stored entry price and the latest stored market price,
+   which is the safest known lower bound when historical ticks are unavailable.
+
+`Manager_Agent` may read this value after the Database_Agent migration is
+successfully deployed. `Profit_Agent` must not derive or persist a competing
+watermark.
+
 ## Exact Backtest Evidence Lookup
 
 `GET /backtests/runs/latest` returns the newest Backtest run matching one exact
