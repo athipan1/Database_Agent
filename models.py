@@ -91,6 +91,7 @@ class AccountBalance(CustomBaseModel):
 
 
 class Position(CustomBaseModel):
+    position_id: Optional[int] = None
     account_id: Union[int, str]
     symbol: str
     quantity: int
@@ -102,6 +103,13 @@ class Position(CustomBaseModel):
         description="Highest observed market price since the current position was opened",
     )
     strategy_bucket: StrategyBucket = "unassigned"
+    position_version: int = 1
+    first_target_executed: bool = False
+    second_target_executed: bool = False
+    total_exited_quantity: Decimal = Decimal("0")
+    last_profit_decision_id: Optional[str] = None
+    last_profit_decision_status: Optional[str] = None
+    last_profit_decision_at: Optional[datetime.datetime] = None
 
 
 class BrokerSyncBody(CustomBaseModel):

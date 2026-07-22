@@ -116,6 +116,10 @@ from policy_review_repository import setup_policy_review_table
 
 from policy_review_routes import create_policy_review_routes
 
+from profit_lifecycle_repository import setup_profit_lifecycle_tables
+
+from profit_lifecycle_routes import create_profit_lifecycle_routes
+
 from models import (
 
     AccountBalance, Position, Order, CreateOrderBody,
@@ -279,6 +283,8 @@ app.include_router(create_plan_record_routes(db, get_api_key, get_correlation_id
 # ✅ เพิ่มใหม่: Policy Review Audit routes
 
 app.include_router(create_policy_review_routes(db, get_api_key, get_correlation_id))
+
+app.include_router(create_profit_lifecycle_routes(db, get_api_key, get_correlation_id))
 
 alpaca_client = AlpacaClient(
 
@@ -465,6 +471,8 @@ async def startup_event():
         # ✅ เพิ่มใหม่: สร้าง/ตรวจ table policy_review_audits
 
         setup_policy_review_table(db)
+
+        setup_profit_lifecycle_tables(db)
 
         logging.info("Database tables verification/creation complete.")
 
