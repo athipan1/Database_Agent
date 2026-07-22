@@ -114,8 +114,8 @@ For `/broker-sync/status`, the field is present under both
 2. When a newer market price is received, the stored value changes only when
    that price is greater than the existing value. A lower price never reduces
    the watermark.
-3. Broker synchronization preserves the existing watermark even though the
-   current implementation replaces the account's position rows per snapshot.
+3. Broker synchronization updates an existing open-position row in place. It
+   preserves `position_id`, the watermark, version, and profit lifecycle state.
 4. When a position disappears from the broker snapshot, its row is deleted.
    A later position for the same symbol is a new lifecycle and starts from the
    new entry price.
@@ -151,6 +151,57 @@ back to another symbol, strategy, or timeframe. It returns the newest run even
 when that run failed, so callers cannot silently reuse an older passing result.
 The response is evidence only: Manager/Risk must still verify pass status and
 freshness before authorizing execution.
+
+## Profit lifecycle and decision state
+
+`Database_Agent` owns the open-position lifecycle and exposes authenticated
+endpoints using schema `profit-lifecycle.v1`:
+
+```http
+GET  /accounts/{account_id}/profit-lifecycles
+GET  /accounts/{account_id}/profit-lifecycles/{position_id}
+POST /accounts/{account_id}/profit-decisions/reserve
+GET  /accounts/{account_id}/profit-decisions/{decision_id}
+POST /accounts/{account_id}/profit-decisions/{decision_id}/transition
+```
+
+An open position returns a stable external identity such as
+`account-1:position-42`, `position_version`, both target flags, total exited
+quantity, remaining quantity, peak price, and last decision fields. Broker sync
+preserves these values while the position remains open. A position removed from
+a broker snapshot is closed by deleting its active row; reopening later creates
+a new `position_id`.
+
+Decision reservation locks the position row, verifies the optimistic version,
+and inserts `PROPOSED` under the unique key
+`(account_id, position_id, decision_id)`. Repeating the same reservation returns
+the existing record with `duplicate=true`; it never creates a second execution
+identity.
+
+Allowed state transitions are:
+
+```text
+PROPOSED -> RISK_APPROVED -> EXECUTION_PENDING -> EXECUTED
+PROPOSED -> REJECTED | FAILED | EXPIRED
+RISK_APPROVED -> FAILED | EXPIRED
+EXECUTION_PENDING -> FAILED | EXPIRED
+```
+
+Target flags, `total_exited_quantity`, and `position_version` change only on an
+`EXECUTED` transition with a positive broker-confirmed fill quantity. Replaying
+the same transition is idempotent. A stale version or invalid transition returns
+HTTP `409`.
+
+PostgreSQL deployment migration:
+
+```text
+migrations/002_profit_lifecycle.up.sql
+migrations/002_profit_lifecycle.down.sql
+```
+
+Existing positions are backfilled to version 1, false target flags, and zero
+exited quantity. The downgrade removes the decision table and additive columns;
+export audit records before rollback if they must be retained.
 
 ## Safety Rules
 

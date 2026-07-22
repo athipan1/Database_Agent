@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 from position_bucket_repository import setup_position_bucket_columns
 from position_peak_repository import highest_price_since_entry_for_sync, setup_position_peak_tracking
+from profit_lifecycle_repository import setup_profit_lifecycle_tables
 from skill_trade_outcome_repository import create_skill_trade_outcome, setup_skill_trade_outcome_table
 
 try:
@@ -85,8 +86,12 @@ def _existing_position_buckets(cursor, db, account_id: int) -> Dict[str, Dict[st
     try:
         cursor.execute(
             f"""
-            SELECT symbol, strategy_bucket, strategy_bucket_source, strategy_bucket_reason,
-                   strategy_bucket_updated_at, highest_price_since_entry
+            SELECT position_id, symbol, quantity, average_cost,
+                   strategy_bucket, strategy_bucket_source, strategy_bucket_reason,
+                   strategy_bucket_updated_at, highest_price_since_entry,
+                   position_version, first_target_executed, second_target_executed,
+                   total_exited_quantity, last_profit_decision_id,
+                   last_profit_decision_status, last_profit_decision_at
             FROM positions WHERE account_id = {p}
             """,
             (account_id,),
@@ -214,6 +219,7 @@ def setup_broker_sync_tables(db) -> None:
         finally:
             cursor.close()
     setup_position_peak_tracking(db)
+    setup_profit_lifecycle_tables(db)
     setup_position_bucket_columns(db)
     setup_skill_trade_outcome_table(db)
     _register_status_route(db)
@@ -244,12 +250,13 @@ def _replace_positions(cursor, db, account_id: int, positions: List[Dict[str, An
     p = _param(db)
     synced_at = _now(db)
     existing_buckets = _existing_position_buckets(cursor, db, account_id)
-    cursor.execute(f"DELETE FROM positions WHERE account_id = {p}", (account_id,))
     count = 0
+    seen_symbols: List[str] = []
     for item in positions or []:
         symbol = str(item.get("symbol") or "").upper()
         if not symbol:
             continue
+        seen_symbols.append(symbol)
         quantity = _qty(item.get("qty") or item.get("quantity"))
         average_cost = _decimal(item.get("avg_entry_price") or item.get("average_cost"))
         current_price = _decimal(item.get("current_price"), average_cost)
@@ -265,31 +272,67 @@ def _replace_positions(cursor, db, account_id: int, positions: List[Dict[str, An
         strategy_bucket_source = _strategy_bucket_source_or_existing(item, existing)
         strategy_bucket_reason = existing.get("strategy_bucket_reason") if isinstance(existing, dict) else None
         strategy_bucket_updated_at = existing.get("strategy_bucket_updated_at") if isinstance(existing, dict) else None
-        cursor.execute(
-            f"""
-            INSERT INTO positions (
-                account_id, symbol, quantity, average_cost, current_market_price, market_value,
-                highest_price_since_entry, strategy_bucket, strategy_bucket_source,
-                strategy_bucket_reason, strategy_bucket_updated_at, broker_synced_at
+        if existing.get("position_id") is not None:
+            cursor.execute(
+                f"""
+                UPDATE positions
+                SET quantity = {p}, average_cost = {p}, current_market_price = {p},
+                    market_value = {p}, highest_price_since_entry = {p},
+                    strategy_bucket = {p}, strategy_bucket_source = {p},
+                    strategy_bucket_reason = {p}, strategy_bucket_updated_at = {p},
+                    broker_synced_at = {p}
+                WHERE account_id = {p} AND position_id = {p}
+                """,
+                (
+                    quantity,
+                    str(average_cost),
+                    str(current_price),
+                    str(market_value),
+                    str(highest_price_since_entry),
+                    strategy_bucket,
+                    strategy_bucket_source,
+                    strategy_bucket_reason,
+                    strategy_bucket_updated_at,
+                    synced_at,
+                    account_id,
+                    existing["position_id"],
+                ),
             )
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
-            """,
-            (
-                account_id,
-                symbol,
-                quantity,
-                str(average_cost),
-                str(current_price),
-                str(market_value),
-                str(highest_price_since_entry),
-                strategy_bucket,
-                strategy_bucket_source,
-                strategy_bucket_reason,
-                strategy_bucket_updated_at,
-                synced_at,
-            ),
-        )
+        else:
+            cursor.execute(
+                f"""
+                INSERT INTO positions (
+                    account_id, symbol, quantity, average_cost, current_market_price, market_value,
+                    highest_price_since_entry, strategy_bucket, strategy_bucket_source,
+                    strategy_bucket_reason, strategy_bucket_updated_at, broker_synced_at
+                )
+                VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+                """,
+                (
+                    account_id,
+                    symbol,
+                    quantity,
+                    str(average_cost),
+                    str(current_price),
+                    str(market_value),
+                    str(highest_price_since_entry),
+                    strategy_bucket,
+                    strategy_bucket_source,
+                    strategy_bucket_reason,
+                    strategy_bucket_updated_at,
+                    synced_at,
+                ),
+            )
         count += 1
+    if seen_symbols:
+        placeholders = ",".join([p] * len(seen_symbols))
+        cursor.execute(
+            f"DELETE FROM positions WHERE account_id = {p} "
+            f"AND symbol NOT IN ({placeholders})",
+            (account_id, *seen_symbols),
+        )
+    else:
+        cursor.execute(f"DELETE FROM positions WHERE account_id = {p}", (account_id,))
     return count
 
 

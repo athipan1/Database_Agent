@@ -157,6 +157,28 @@ def test_broker_sync_keeps_highest_price_when_latest_price_falls():
     assert Decimal(str(snapshot_position["highest_price_since_entry"])) == Decimal("125")
 
 
+def test_broker_sync_preserves_position_identity_and_profit_lifecycle():
+    db = SQLitePositionPeakTestDB()
+
+    sync_broker_state(db, broker_state(entry_price="100", current_price="110"))
+    first = db.positions()[0]
+    db.conn.execute(
+        "UPDATE positions SET position_version = 4, "
+        "first_target_executed = TRUE, total_exited_quantity = '3' "
+        "WHERE position_id = ?",
+        (first["position_id"],),
+    )
+    db.conn.commit()
+
+    sync_broker_state(db, broker_state(entry_price="100", current_price="115"))
+    second = db.positions()[0]
+
+    assert second["position_id"] == first["position_id"]
+    assert second["position_version"] == 4
+    assert bool(second["first_target_executed"]) is True
+    assert Decimal(str(second["total_exited_quantity"])) == Decimal("3")
+
+
 def test_closed_position_reopens_with_a_fresh_entry_peak():
     db = SQLitePositionPeakTestDB()
 
@@ -197,6 +219,9 @@ def test_database_trigger_applies_max_semantics_to_direct_price_updates():
 def test_position_api_schema_exposes_highest_price_since_entry():
     schema = Position.model_json_schema()
     assert "highest_price_since_entry" in schema["properties"]
+    assert "position_id" in schema["properties"]
+    assert "position_version" in schema["properties"]
+    assert "first_target_executed" in schema["properties"]
 
     position = Position(
         account_id=1,

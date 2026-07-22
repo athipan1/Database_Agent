@@ -9,6 +9,21 @@ The Database Agent is a FastAPI-based service responsible for managing all datab
 3.  **Data Source for Learning**: Acts as the single source of truth for the `LearningAgent` to evaluate agent performance, calculate rewards/penalties, and adjust agent weights.
 4.  **System Auditing**: Provides a complete audit trail. A single `correlation_id` can be used to trace an entire decision and execution chain, simplifying debugging and enhancing explainability.
 
+## Profit decision lifecycle
+
+Database Agent is the source of truth for profit-taking idempotency. It keeps a
+stable `position_id` during broker sync, an optimistic `position_version`,
+executed target flags, total exited quantity, and a uniquely reserved decision
+record. Manager must reserve an advisory decision here before Risk approval and
+must transition it to `EXECUTED` only after a confirmed fill.
+
+The PostgreSQL upgrade and rollback scripts are:
+
+```text
+migrations/002_profit_lifecycle.up.sql
+migrations/002_profit_lifecycle.down.sql
+```
+
 ---
 
 ## Getting Started
