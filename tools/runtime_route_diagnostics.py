@@ -18,6 +18,18 @@ def inspect_routes() -> dict:
         ("/backtests/runs/latest", "GET"),
         ("/skills/{skill_id}/backtest-status", "GET"),
     ]
+    route_inventory = []
+    for route in runtime.app.routes:
+        path = str(getattr(route, "path", ""))
+        if "skill" in path.lower() or "backtest" in path.lower():
+            route_inventory.append(
+                {
+                    "path": path,
+                    "methods": sorted(getattr(route, "methods", None) or []),
+                    "name": getattr(route, "name", None),
+                }
+            )
+
     return {
         "counts": {
             path: sum(
@@ -27,7 +39,10 @@ def inspect_routes() -> dict:
                 and method in (getattr(route, "methods", None) or set())
             )
             for path, method in targets
-        }
+        },
+        "routes": route_inventory,
+        "module_file": str(Path(runtime.__file__).resolve()),
+        "total_routes": len(runtime.app.routes),
     }
 
 
