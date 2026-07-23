@@ -42,8 +42,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
-      - name: Route uniqueness
-        run: python -m pytest -q tests/test_runtime_order_execution_contract.py::test_curator_routes_are_registered_once_in_runtime
+      - name: Skill performance route
+        run: python -m pytest -q tests/test_runtime_order_execution_contract.py::test_skill_performance_rank_route_is_registered_once
+      - name: Latest backtest route
+        if: always()
+        run: python -m pytest -q tests/test_runtime_order_execution_contract.py::test_latest_backtest_route_is_registered_once
+      - name: Skill backtest status route
+        if: always()
+        run: python -m pytest -q tests/test_runtime_order_execution_contract.py::test_skill_backtest_status_route_is_registered_once
       - name: Execute response contract
         if: always()
         run: python -m pytest -q tests/test_runtime_order_execution_contract.py::test_execute_order_endpoint_returns_declared_response_object
