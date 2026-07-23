@@ -42,14 +42,45 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
-      - name: Skill performance route
-        run: python -m pytest -q tests/test_runtime_order_execution_contract.py::test_skill_performance_rank_route_is_registered_once
-      - name: Latest backtest route
+      - name: Routes are present
+        run: |
+          python - <<'PY'
+          import main_with_skill_routes as runtime
+          targets = [
+              ("/skills/performance/rank", "GET"),
+              ("/backtests/runs/latest", "GET"),
+              ("/skills/{skill_id}/backtest-status", "GET"),
+          ]
+          counts = [
+              sum(
+                  1 for route in runtime.app.routes
+                  if getattr(route, "path", None) == path
+                  and method in (getattr(route, "methods", None) or set())
+              )
+              for path, method in targets
+          ]
+          assert all(count >= 1 for count in counts), counts
+          PY
+      - name: Routes are not duplicated
         if: always()
-        run: python -m pytest -q tests/test_runtime_order_execution_contract.py::test_latest_backtest_route_is_registered_once
-      - name: Skill backtest status route
-        if: always()
-        run: python -m pytest -q tests/test_runtime_order_execution_contract.py::test_skill_backtest_status_route_is_registered_once
+        run: |
+          python - <<'PY'
+          import main_with_skill_routes as runtime
+          targets = [
+              ("/skills/performance/rank", "GET"),
+              ("/backtests/runs/latest", "GET"),
+              ("/skills/{skill_id}/backtest-status", "GET"),
+          ]
+          counts = [
+              sum(
+                  1 for route in runtime.app.routes
+                  if getattr(route, "path", None) == path
+                  and method in (getattr(route, "methods", None) or set())
+              )
+              for path, method in targets
+          ]
+          assert all(count <= 1 for count in counts), counts
+          PY
       - name: Execute response contract
         if: always()
         run: python -m pytest -q tests/test_runtime_order_execution_contract.py::test_execute_order_endpoint_returns_declared_response_object
