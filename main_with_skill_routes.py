@@ -35,17 +35,40 @@ def _has_route(path: str, method: str) -> bool:
     return any(
         getattr(route, "path", None) == path
         and expected_method in (getattr(route, "methods", None) or set())
-        for route in app.routes
+        for route in app.router.routes
     )
 
 
-if not _has_route("/skills/performance/rank", "GET"):
-    app.include_router(
-        create_skill_performance_routes(db, get_api_key, get_correlation_id)
+def _mount_router_once(name: str, sentinel_path: str, router) -> None:
+    before = len(app.router.routes)
+    already_present = _has_route(sentinel_path, "GET")
+    candidate_routes = len(router.routes)
+    if not already_present:
+        app.router.include_router(router)
+    after = len(app.router.routes)
+    logging.info(
+        "Runtime router mount evaluated",
+        extra={
+            "router_name": name,
+            "sentinel_path": sentinel_path,
+            "already_present": already_present,
+            "candidate_routes": candidate_routes,
+            "routes_before": before,
+            "routes_after": after,
+        },
     )
 
-if not _has_route("/backtests/runs/latest", "GET"):
-    app.include_router(create_backtest_routes(db, get_api_key, get_correlation_id))
+
+_mount_router_once(
+    "skill-performance",
+    "/skills/performance/rank",
+    create_skill_performance_routes(db, get_api_key, get_correlation_id),
+)
+_mount_router_once(
+    "backtests",
+    "/backtests/runs/latest",
+    create_backtest_routes(db, get_api_key, get_correlation_id),
+)
 
 
 @app.on_event("startup")
