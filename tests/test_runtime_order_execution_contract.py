@@ -24,9 +24,15 @@ def _route_count(path: str, method: str) -> int:
     )
 
 
-def test_curator_routes_are_registered_once_in_runtime():
+def test_skill_performance_rank_route_is_registered_once():
     assert _route_count("/skills/performance/rank", "GET") == 1
+
+
+def test_latest_backtest_route_is_registered_once():
     assert _route_count("/backtests/runs/latest", "GET") == 1
+
+
+def test_skill_backtest_status_route_is_registered_once():
     assert _route_count("/skills/{skill_id}/backtest-status", "GET") == 1
 
 
