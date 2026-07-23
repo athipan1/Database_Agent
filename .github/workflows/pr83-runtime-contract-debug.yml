@@ -34,7 +34,7 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       - name: Test runtime contract only
-        env: &test-env
+        env:
           POSTGRES_USER: trading_user
           POSTGRES_PASSWORD: your_strong_password_here
           POSTGRES_DB: trading_db_test
@@ -71,5 +71,11 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Test existing regression suite
         env:
-          <<: *test-env
+          POSTGRES_USER: trading_user
+          POSTGRES_PASSWORD: your_strong_password_here
+          POSTGRES_DB: trading_db_test
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          DATABASE_AGENT_API_KEY: test_database_key
+          DATABASE_DEV_MODE: "true"
         run: python -m pytest -q --ignore=tests/test_runtime_order_execution_contract.py
