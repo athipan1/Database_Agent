@@ -43,27 +43,7 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       - name: Capture route counts
-        run: |
-          python - <<'PY'
-          import json
-          import main_with_skill_routes as runtime
-
-          targets = [
-              ("/skills/performance/rank", "GET"),
-              ("/backtests/runs/latest", "GET"),
-              ("/skills/{skill_id}/backtest-status", "GET"),
-          ]
-          counts = {}
-          for path, method in targets:
-              counts[path] = sum(
-                  1
-                  for route in runtime.app.routes
-                  if getattr(route, "path", None) == path
-                  and method in (getattr(route, "methods", None) or set())
-              )
-          with open("route-counts.json", "w", encoding="utf-8") as output:
-              json.dump(counts, output, indent=2, sort_keys=True)
-          PY
+        run: python tools/runtime_route_diagnostics.py
       - name: Upload route counts
         uses: actions/upload-artifact@v4
         with:
