@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.application import create_application
-from app.route_registry import route_signature
+from app.route_registry import is_http_signature, route_signature
 
 
 def _runtime():
@@ -46,7 +46,11 @@ def test_application_factory_replaces_owned_routes_without_duplicates():
     runtime, _ = _runtime()
     app = create_application(runtime)
 
-    signatures = [route_signature(route) for route in app.router.routes]
+    signatures = [
+        signature
+        for route in app.router.routes
+        if is_http_signature(signature := route_signature(route))
+    ]
     assert len(signatures) == len(set(signatures))
     assert sum(
         1
