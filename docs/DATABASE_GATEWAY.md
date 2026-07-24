@@ -27,7 +27,11 @@ Database_Agent ต้องมี:
 ```env
 DATABASE_URL=postgresql://...
 DATABASE_AGENT_API_KEY=...
+DATABASE_DEV_MODE=false
+TRADING_MODE=PAPER
 ```
+
+`DATABASE_URL` ควรเป็น Railway private connection URL เมื่อ Database_Agent และ PostgreSQL อยู่ใน project/environment เดียวกัน
 
 ### Other Agents
 
@@ -46,6 +50,50 @@ DATABASE_AGENT_API_KEY=your-api-key
 - ทำให้ Database_Agent เป็น single source of truth
 - audit ง่ายกว่า
 - ป้องกัน service อื่นยิง SQL ตรงเข้า production database
+
+## Railway Readiness
+
+Database_Agent มี endpoint สองระดับ:
+
+```text
+GET /health  process และสถานะโดยรวม ตอบ HTTP 200 พร้อมรายละเอียดสถานะ
+GET /ready   PostgreSQL readiness ตอบ HTTP 503 จนกว่าจะเชื่อมฐานข้อมูลได้
+```
+
+Railway หรือ container healthcheck ควรใช้ `/ready` เพื่อไม่ปล่อย instance ที่เปิด Uvicorn ได้ แต่ PostgreSQL ยังไม่พร้อม เข้ารับ traffic
+
+ผลที่พร้อมใช้งานต้องมี:
+
+```json
+{
+  "data": {
+    "database_connection": "connected"
+  }
+}
+```
+
+## Secret-safe Write/Read Smoke Test
+
+Repository มี workflow `Railway Database API Smoke` สำหรับทดสอบ production โดยไม่ส่ง `DATABASE_URL` ออกนอก Database_Agent
+
+ตั้งค่าที่ GitHub repository:
+
+```text
+Secret: DATABASE_AGENT_API_KEY
+Variable หรือ Secret: DATABASE_AGENT_URL
+```
+
+หรือใส่ public Database_Agent URL เป็น input ตอนกด `Run workflow`
+
+Workflow จะทำตามลำดับ:
+
+1. รอ `GET /ready` จน PostgreSQL connected
+2. เขียน synthetic signal ที่ symbol `ZZTEST`
+3. อ่านแถวเดิมกลับจาก `/history/signals`
+4. ตรวจ `metadata.synthetic=true` และ `safe_for_trading=false`
+5. แสดงเฉพาะผลที่กรอง secret แล้วใน Job Summary
+
+แถว diagnostic ไม่สร้าง order, fill, position หรือคำสั่งเทรด
 
 ## Current Persistence Target
 
