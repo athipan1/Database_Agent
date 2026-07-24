@@ -1,0 +1,58 @@
+name: Railway Database API Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      database_agent_url:
+        description: Optional public Database_Agent URL override
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  write-read-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DATABASE_AGENT_URL: ${{ inputs.database_agent_url || vars.DATABASE_AGENT_URL || secrets.DATABASE_AGENT_URL }}
+      DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify required configuration
+        shell: bash
+        run: |
+          if [ -z "$DATABASE_AGENT_URL" ]; then
+            echo "DATABASE_AGENT_URL is missing. Provide the workflow input, repository variable, or repository secret."
+            exit 1
+          fi
+          if [ -z "$DATABASE_AGENT_API_KEY" ]; then
+            echo "DATABASE_AGENT_API_KEY repository secret is missing."
+            exit 1
+          fi
+
+      - name: Verify Railway PostgreSQL through Database_Agent API
+        shell: bash
+        run: |
+          python scripts/railway_database_api_smoke.py | tee railway-database-smoke-result.json
+
+      - name: Publish sanitized summary
+        if: always()
+        shell: bash
+        run: |
+          echo "## Railway Database API Smoke" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f railway-database-smoke-result.json ]; then
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat railway-database-smoke-result.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The smoke script did not produce a result file." >> "$GITHUB_STEP_SUMMARY"
+          fi
