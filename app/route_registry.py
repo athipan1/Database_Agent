@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import FrozenSet, Tuple
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 
 
 RouteSignature = Tuple[str, FrozenSet[str]]
@@ -27,6 +27,14 @@ def method_signatures(signatures: Iterable[tuple[str, str]]) -> set[RouteSignatu
     return {(path, frozenset({method})) for path, method in signatures}
 
 
+def _http_signatures(app: FastAPI) -> set[RouteSignature]:
+    return {
+        signature
+        for route in app.router.routes
+        if is_http_signature(signature := route_signature(route))
+    }
+
+
 def copy_missing_routes(
     source: FastAPI,
     target: FastAPI,
@@ -34,7 +42,7 @@ def copy_missing_routes(
     excluded: set[RouteSignature] | None = None,
     excluded_paths: set[str] | None = None,
 ) -> None:
-    """Copy source routes without duplicating HTTP operations.
+    """Copy legacy routes without duplicating HTTP operations.
 
     Mount and WebSocket routes do not expose HTTP method sets, so they are
     retained independently instead of being collapsed into an empty signature.
@@ -42,11 +50,7 @@ def copy_missing_routes(
 
     excluded_signatures = excluded or set()
     paths_to_skip = excluded_paths or set()
-    existing = {
-        signature
-        for route in target.router.routes
-        if is_http_signature(signature := route_signature(route))
-    }
+    existing = _http_signatures(target)
 
     for route in source.router.routes:
         signature = route_signature(route)
@@ -58,6 +62,25 @@ def copy_missing_routes(
                 continue
             existing.add(signature)
         target.router.routes.append(route)
+
+
+def mount_router_routes(target: FastAPI, router: APIRouter) -> None:
+    """Mount pre-built modular routes by exact HTTP signature.
+
+    Direct route mounting preserves the already-built endpoint dependencies and
+    response models while avoiding an additional cloning pass during migration.
+    This mirrors the route-merging strategy used by the production skill and
+    backtest runtime.
+    """
+
+    existing = _http_signatures(target)
+    for route in router.routes:
+        signature = route_signature(route)
+        if is_http_signature(signature) and signature in existing:
+            continue
+        target.router.routes.append(route)
+        if is_http_signature(signature):
+            existing.add(signature)
 
 
 def assert_unique_routes(app: FastAPI) -> None:
