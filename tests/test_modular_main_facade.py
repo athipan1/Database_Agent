@@ -28,7 +28,7 @@ def _run_isolated(script: str) -> None:
     )
 
 
-def test_main_is_small_facade_and_legacy_surface_is_preserved():
+def test_main_is_small_facade_and_legacy_module_is_removed():
     _run_isolated(
         """
         from pathlib import Path
@@ -36,26 +36,29 @@ def test_main_is_small_facade_and_legacy_surface_is_preserved():
         import main
 
         assert Path(main.__file__).name == "main.py"
-        assert main.app is main._legacy.app
-        assert main.db is main._legacy.db
-        assert len(Path(main.__file__).read_text().splitlines()) < 80
-        assert len(Path(main._legacy.__file__).read_text().splitlines()) > 1000
+        assert not Path("legacy_main.py").exists()
+        assert main.app is main._runtime.app
+        assert main.db is main._runtime.db
+        assert len(Path(main.__file__).read_text().splitlines()) < 60
+        assert len(Path(main._runtime.__file__).read_text().splitlines()) < 250
 
-        original = main._legacy.DATABASE_AGENT_API_KEY
+        original = main._runtime.DATABASE_AGENT_API_KEY
         with patch.object(main, "DATABASE_AGENT_API_KEY", "patched-key"):
             assert main.DATABASE_AGENT_API_KEY == "patched-key"
-            assert main._legacy.DATABASE_AGENT_API_KEY == "patched-key"
-        assert main._legacy.DATABASE_AGENT_API_KEY == original
+            assert main._runtime.DATABASE_AGENT_API_KEY == "patched-key"
+        assert main._runtime.DATABASE_AGENT_API_KEY == original
         """
     )
 
 
-def test_modular_runtime_registers_migrated_routes_once():
+def test_modular_runtime_registers_all_core_routes_once():
     _run_isolated(
         """
         import main
 
         targets = [
+            ("/health", "GET"),
+            ("/metrics", "GET"),
             ("/history/signals", "GET"),
             ("/history/performance", "POST"),
             ("/accounts/{account_id}/fills", "POST"),
