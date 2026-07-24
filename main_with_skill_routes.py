@@ -1,17 +1,17 @@
-"""Database_Agent runtime entrypoint.
+"""Database_Agent production runtime entrypoint.
 
-This entrypoint keeps the legacy ``main.py`` application while installing the
-atomic strategy-bucket order creation contract and the account-aware order
-execution contract used by the Docker runtime.
+The modular ``main.py`` facade assembles the core API while this entrypoint
+installs the atomic strategy-bucket order creation contract, the account-aware
+order execution contract, and Curator-facing routes.
 
-Curator-facing routes are merged by their ``path + methods`` signature. Existing
-routes are preserved and only missing routes are appended, preventing both
-missing endpoints and duplicate OpenAPI operations.
+Curator routes are merged by ``path + methods`` signature. Existing routes are
+preserved and only missing routes are appended.
 """
 
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 import main as main_module
 from backtest_repository import setup_backtest_tables
@@ -40,6 +40,7 @@ def _route_signature(route) -> tuple[str, frozenset[str]]:
 
 def _mount_missing_routes(name: str, router) -> None:
     """Append only routes not already registered on the active FastAPI app."""
+
     existing_signatures = {
         _route_signature(route) for route in app.router.routes
     }
@@ -77,13 +78,27 @@ _mount_missing_routes(
 )
 
 
-@app.on_event("startup")
-async def startup_skill_and_backtest_tables() -> None:
-    """Ensure Curator-facing tables exist when the API starts."""
-    try:
-        setup_skill_performance_tables(db)
-        setup_backtest_tables(db)
-        logging.info("Skill performance and backtest tables verification/creation complete.")
-    except Exception:
-        logging.exception("Failed to verify/create skill performance and backtest tables.")
-        raise
+_base_lifespan = app.router.lifespan_context
+
+
+@asynccontextmanager
+async def runtime_lifespan(app_instance):
+    """Run core startup first, then verify Curator-facing tables."""
+
+    async with _base_lifespan(app_instance):
+        try:
+            setup_skill_performance_tables(db)
+            setup_backtest_tables(db)
+            logging.info(
+                "Skill performance and backtest tables "
+                "verification/creation complete."
+            )
+        except Exception:
+            logging.exception(
+                "Failed to verify/create skill performance and backtest tables."
+            )
+            raise
+        yield
+
+
+app.router.lifespan_context = runtime_lifespan
