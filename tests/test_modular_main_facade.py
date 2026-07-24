@@ -35,6 +35,7 @@ def test_main_is_small_facade_and_legacy_surface_is_preserved():
         from unittest.mock import patch
         import main
 
+        assert Path(main.__file__).name == "main.py"
         assert main.app is main._legacy.app
         assert main.db is main._legacy.db
         assert len(Path(main.__file__).read_text().splitlines()) < 80
