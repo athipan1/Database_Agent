@@ -5,12 +5,18 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from models import StandardAgentResponse
 
 
-ROUTE_SIGNATURES = frozenset({("/health", "GET")})
+ROUTE_SIGNATURES = frozenset(
+    {
+        ("/health", "GET"),
+        ("/metrics", "GET"),
+    }
+)
 
 
 def create_system_router(runtime: Any) -> APIRouter:
@@ -43,5 +49,9 @@ def create_system_router(runtime: Any) -> APIRouter:
                 "database_emergency_halt": runtime.DATABASE_EMERGENCY_HALT,
             }
         )
+
+    @router.get("/metrics")
+    async def metrics():
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     return router
