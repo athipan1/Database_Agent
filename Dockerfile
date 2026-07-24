@@ -41,9 +41,9 @@ COPY --chown=app:app . .
 # Expose the port the app will run on
 EXPOSE 8004
 
-# Add a healthcheck to ensure the application is responsive
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8004/health || exit 1
+# Readiness verifies that PostgreSQL is usable, not only that Uvicorn responds.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+  CMD curl -f http://localhost:8004/ready || exit 1
 
 # The command to run the application.
 # main_with_skill_routes imports the existing main:app and mounts Curator-facing
