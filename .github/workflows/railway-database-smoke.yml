@@ -1,6 +1,9 @@
 name: Railway Database API Smoke
 
 on:
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       database_agent_url:
@@ -12,7 +15,32 @@ permissions:
   contents: read
 
 jobs:
+  configuration-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_AGENT_URL: ${{ vars.DATABASE_AGENT_URL || secrets.DATABASE_AGENT_URL }}
+      DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
+    steps:
+      - name: Report secret-safe configuration state
+        shell: bash
+        run: |
+          url_configured=false
+          api_key_configured=false
+          if [ -n "$DATABASE_AGENT_URL" ]; then
+            url_configured=true
+          fi
+          if [ -n "$DATABASE_AGENT_API_KEY" ]; then
+            api_key_configured=true
+          fi
+          echo "DATABASE_AGENT_URL configured: $url_configured"
+          echo "DATABASE_AGENT_API_KEY configured: $api_key_configured"
+          echo "## Railway Smoke Configuration" >> "$GITHUB_STEP_SUMMARY"
+          echo "- DATABASE_AGENT_URL configured: \`$url_configured\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- DATABASE_AGENT_API_KEY configured: \`$api_key_configured\`" >> "$GITHUB_STEP_SUMMARY"
+
   write-read-smoke:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
