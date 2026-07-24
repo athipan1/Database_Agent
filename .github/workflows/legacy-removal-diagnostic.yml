@@ -1,9 +1,9 @@
 name: Legacy Removal Diagnostic
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/remove-legacy-main
+      - main
 
 permissions:
   contents: read
