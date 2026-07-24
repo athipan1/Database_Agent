@@ -61,6 +61,6 @@ def create_application(runtime: Any) -> FastAPI:
     mount_router_routes(app, create_execution_router(runtime))
     mount_router_routes(app, create_accounts_orders_router(runtime))
 
-    Instrumentator().instrument(app).expose(app)
+    Instrumentator().instrument(app)
     assert_unique_routes(app)
     return app
