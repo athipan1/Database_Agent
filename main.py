@@ -8,10 +8,19 @@ modify attributes on ``main`` directly.
 
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 
-import legacy_main as _legacy
+
+# Reload the compatibility implementation when ``main`` is imported again after
+# being removed from ``sys.modules``. This preserves the historical fail-closed
+# environment guards exercised by deployment checks and the existing test suite.
+if "legacy_main" in sys.modules:
+    _legacy = importlib.reload(sys.modules["legacy_main"])
+else:
+    _legacy = importlib.import_module("legacy_main")
+
 from app.application import create_application
 
 
