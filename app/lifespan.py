@@ -1,4 +1,4 @@
-"""FastAPI lifespan adapter for the legacy startup and shutdown contracts."""
+"""FastAPI lifespan adapter for modular runtime startup and shutdown."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 
 def create_runtime_lifespan(runtime: Any):
-    """Build a lifespan context from the runtime's existing event functions."""
+    """Build a lifespan context from runtime lifecycle functions."""
 
     @asynccontextmanager
     async def lifespan(app):
