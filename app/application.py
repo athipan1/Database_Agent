@@ -11,6 +11,7 @@ from app.route_registry import (
     assert_unique_routes,
     copy_missing_routes,
     method_signatures,
+    mount_router_routes,
 )
 from app.routers.accounts_orders import (
     ROUTE_SIGNATURES as ACCOUNT_ORDER_SIGNATURES,
@@ -87,9 +88,9 @@ def create_application(runtime: Any) -> FastAPI:
         excluded_paths=_framework_paths(source),
     )
 
-    app.include_router(create_history_router(runtime))
-    app.include_router(create_execution_router(runtime))
-    app.include_router(create_accounts_orders_router(runtime))
+    mount_router_routes(app, create_history_router(runtime))
+    mount_router_routes(app, create_execution_router(runtime))
+    mount_router_routes(app, create_accounts_orders_router(runtime))
 
     assert_unique_routes(app)
     return app
