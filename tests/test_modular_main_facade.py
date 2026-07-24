@@ -63,6 +63,7 @@ def test_modular_runtime_registers_migrated_routes_once():
             ("/accounts/{account_id}/orders", "POST"),
             ("/accounts/{account_id}/orders/{order_id}/execute", "POST"),
         ]
+        openapi_paths = main.app.openapi()["paths"]
         for path, method in targets:
             matches = [
                 route
@@ -71,5 +72,6 @@ def test_modular_runtime_registers_migrated_routes_once():
                 and method in (getattr(route, "methods", None) or set())
             ]
             assert len(matches) == 1, (path, method, len(matches))
+            assert method.lower() in openapi_paths[path]
         """
     )
