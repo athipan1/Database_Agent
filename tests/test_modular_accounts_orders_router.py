@@ -76,4 +76,4 @@ def test_execute_route_uses_account_aware_database_contract():
         "status": "executed",
         "reason": None,
     }
-    runtime.db.execute_order.assert_called_once_with(1, 42)
+    runtime.db.execute_order.assert_called_once_with("1", "42")
