@@ -34,11 +34,7 @@ def test_application_factory_registers_modular_routes_without_duplicates():
         ("/history/signals", "GET"),
         ("/accounts/{account_id}/orders", "POST"),
     ):
-        assert sum(
-            1
-            for route in app.router.routes
-            if route.path == path and method in (route.methods or set())
-        ) == 1
+        assert signatures.count((path, frozenset({method}))) == 1
 
 
 def test_application_factory_runs_runtime_lifespan_once():
