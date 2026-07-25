@@ -10,6 +10,8 @@ from pathlib import Path
 import psycopg2
 import psycopg2.extras
 
+from postgres_tls import connection_uses_tls
+
 
 MANIFEST_PATH = Path(__file__).resolve().parents[1] / "supabase" / "schema_manifest.json"
 
@@ -80,10 +82,7 @@ def main() -> int:
                 """,
                 (manifest["schema_name"],),
             )
-            ssl_state = _fetch_one(
-                cursor,
-                "SELECT COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false) AS ssl",
-            )
+            ssl_in_use = connection_uses_tls(connection, cursor)
 
             exposed = {}
             for role in ("anon", "authenticated", "service_role"):
@@ -115,7 +114,7 @@ def main() -> int:
             "schema_identity": identity.get("schema_version")
             == manifest["schema_version"]
             and identity.get("schema_sha256") == manifest["schema_sha256"],
-            "ssl": bool(ssl_state.get("ssl")),
+            "ssl": ssl_in_use,
             "data_api_denied": all(value == 0 for value in exposed.values()),
         }
         report = {
