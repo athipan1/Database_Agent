@@ -84,7 +84,10 @@ def _wait_until_ready(
             and data.get("provider") == expected_provider
             and data.get("schema_identity_match") is True
         )
-        tls_ready = expected_provider != "supabase" or data.get("tls") is True
+        tls_ready = (
+            expected_provider != "supabase"
+            or (isinstance(data, dict) and data.get("tls") is True)
+        )
         if status_code == 200 and provider_ready and tls_ready:
             return data
         if attempt < attempts:
