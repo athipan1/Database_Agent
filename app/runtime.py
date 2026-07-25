@@ -23,6 +23,7 @@ from app.core.middleware import (
 )
 from app.core.responses import wrap_response
 from app.core.security import create_api_key_dependency
+from app.services.database_provider import create_trading_db
 from app.services.market_data import (
     build_default_portfolio_metrics,
     build_mock_price_history,
@@ -62,7 +63,6 @@ from risk_approval_repository import (
     mark_risk_approval_used,
 )
 from session_risk_repository import build_session_risk_snapshot
-from trading_db import TradingDB
 
 
 load_dotenv()
@@ -102,6 +102,7 @@ def apply_settings(settings: Settings) -> None:
 def current_settings() -> Settings:
     """Return settings from current globals so tests can patch them dynamically."""
 
+    database_settings = Settings.from_environ()
     return Settings(
         trading_mode=TRADING_MODE,
         database_dev_mode=DATABASE_DEV_MODE,
@@ -111,6 +112,15 @@ def current_settings() -> Settings:
         default_dev_cash_balance=DEFAULT_DEV_CASH_BALANCE,
         alpaca_api_key=ALPACA_API_KEY,
         alpaca_secret_key=ALPACA_SECRET_KEY,
+        database_provider=database_settings.database_provider,
+        database_url_configured=database_settings.database_url_configured,
+        database_ssl_mode=database_settings.database_ssl_mode,
+        database_create_if_missing=database_settings.database_create_if_missing,
+        database_pool_min=database_settings.database_pool_min,
+        database_pool_max=database_settings.database_pool_max,
+        database_connect_timeout_seconds=(
+            database_settings.database_connect_timeout_seconds
+        ),
     )
 
 
@@ -121,7 +131,7 @@ get_correlation_id = create_correlation_id_dependency(correlation_id_var)
 get_api_key = create_api_key_dependency(current_settings)
 configure_logging(correlation_id_var)
 
-db = TradingDB()
+db = create_trading_db(current_settings())
 alpaca_client = AlpacaClient(
     api_key=ALPACA_API_KEY,
     secret_key=ALPACA_SECRET_KEY,
