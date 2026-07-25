@@ -13,6 +13,10 @@ from policy_review_repository import setup_policy_review_table
 from profit_lifecycle_repository import setup_profit_lifecycle_tables
 from protective_order_repository import setup_protective_order_columns
 from risk_approval_repository import setup_risk_approval_table
+from supabase_replication_repository import (
+    reset_stale_supabase_events,
+    setup_supabase_replication_outbox,
+)
 
 
 def setup_runtime_tables(db) -> None:
@@ -26,6 +30,7 @@ def setup_runtime_tables(db) -> None:
     setup_plan_record_table(db)
     setup_policy_review_table(db)
     setup_profit_lifecycle_tables(db)
+    setup_supabase_replication_outbox(db)
 
 
 def log_database_stats(db) -> None:
@@ -42,6 +47,12 @@ async def startup_runtime(runtime) -> None:
     logging.info("Database Agent API starting up.")
     try:
         setup_runtime_tables(runtime.db)
+        reset_count = reset_stale_supabase_events(runtime.db)
+        if reset_count:
+            logging.warning(
+                "Returned %s stale Supabase outbox events to retry state.",
+                reset_count,
+            )
         logging.info("Database tables verification/creation complete.")
         runtime.runtime_scheduler.configure(
             ingestion_job=runtime.run_ingestion_job,
@@ -49,6 +60,7 @@ async def startup_runtime(runtime) -> None:
             stats_job=runtime.log_database_stats,
         )
         runtime.runtime_scheduler.start()
+        runtime.supabase_replication_worker.start()
     except Exception as exc:
         logging.critical(
             "FATAL: Application startup failed: %s",
@@ -64,4 +76,5 @@ async def startup_runtime(runtime) -> None:
 
 async def shutdown_runtime(runtime) -> None:
     logging.info("Database Agent API shutting down.")
+    runtime.supabase_replication_worker.stop()
     runtime.runtime_scheduler.stop()
