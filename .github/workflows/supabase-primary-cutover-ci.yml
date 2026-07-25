@@ -1,0 +1,95 @@
+name: Supabase Primary Cutover CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  cutover-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_USER: trading_user
+          POSTGRES_PASSWORD: cutover_test_password
+          POSTGRES_DB: trading_db_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Validate scripts and container readiness target
+        run: |
+          bash -n scripts/migrate_postgres_to_supabase.sh
+          python -m py_compile \
+            scripts/compare_primary_counts.py \
+            scripts/database_primary_api_smoke.py \
+            scripts/smoke_supabase_primary.py \
+            scripts/verify_supabase_primary_schema.py
+          grep -F 'http://localhost:8004/ready' Dockerfile
+
+      - name: Run full test suite
+        env:
+          POSTGRES_USER: trading_user
+          POSTGRES_PASSWORD: cutover_test_password
+          POSTGRES_DB: trading_db_test
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          DATABASE_AGENT_API_KEY: cutover-test-key
+          DATABASE_DEV_MODE: 'true'
+        run: python -m pytest
+
+      - name: Verify guarded local readiness contract
+        env:
+          DATABASE_PROVIDER: postgres
+          DATABASE_URL: postgresql://trading_user:cutover_test_password@localhost:5432/trading_db_test
+          DATABASE_SSL_MODE: disable
+          DATABASE_CREATE_IF_MISSING: 'false'
+          DATABASE_CUTOVER_GUARD_ENABLED: 'true'
+          DATABASE_EXPECTED_PROVIDER: postgres
+          DATABASE_REQUIRE_SCHEMA_IDENTITY: 'true'
+          DATABASE_AGENT_API_KEY: cutover-test-key
+          DATABASE_DEV_MODE: 'false'
+          TRADING_MODE: PAPER
+          REDIS_HOST: localhost
+        run: |
+          python - <<'PY'
+          from app.core.config import Settings
+          from app.services.database_provider import create_trading_db
+          from app.services.database_readiness import inspect_database_readiness
+          from app.startup import setup_runtime_tables
+
+          settings = Settings.from_environ()
+          settings.validate()
+          database = create_trading_db(settings)
+          try:
+              setup_runtime_tables(database)
+              report = inspect_database_readiness(database, settings)
+              assert report['ready'] is True, report
+              assert report['provider'] == 'postgres'
+              assert report['schema_identity_match'] is True
+          finally:
+              if database.pool is not None:
+                  database.pool.closeall()
+          PY

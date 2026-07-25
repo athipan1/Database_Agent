@@ -1,0 +1,116 @@
+name: Supabase Primary Cutover
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Verify only or perform the frozen data migration
+        required: true
+        default: verify
+        type: choice
+        options:
+          - verify
+          - migrate
+      confirmation:
+        description: Type MIGRATE_TO_SUPABASE for migrate mode
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    environment: supabase-primary-cutover
+    env:
+      SOURCE_DATABASE_URL: ${{ secrets.RAILWAY_DATABASE_URL }}
+      TARGET_DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+      DATABASE_SSL_MODE: require
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies and PostgreSQL client
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          if ! command -v pg_dump >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+
+      - name: Validate secret presence and confirmation
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          test -n "$TARGET_DATABASE_URL" || {
+            echo "SUPABASE_DATABASE_URL secret is required" >&2
+            exit 1
+          }
+          if [[ "$MODE" == "migrate" ]]; then
+            test -n "$SOURCE_DATABASE_URL" || {
+              echo "RAILWAY_DATABASE_URL secret is required for migrate mode" >&2
+              exit 1
+            }
+            [[ "$CONFIRMATION" == "MIGRATE_TO_SUPABASE" ]] || {
+              echo "Migration confirmation did not match" >&2
+              exit 1
+            }
+          fi
+
+      - name: Verify target schema, TLS, RLS, and privileges
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+        run: python scripts/verify_supabase_primary_schema.py
+
+      - name: Migrate frozen Railway data to Supabase
+        if: inputs.mode == 'migrate'
+        env:
+          CONFIRM_MIGRATION: ${{ inputs.confirmation }}
+        run: bash scripts/migrate_postgres_to_supabase.sh
+
+      - name: Compare source and target counts
+        if: inputs.mode == 'migrate'
+        run: python scripts/compare_primary_counts.py
+
+      - name: Run rollback-only non-trading write smoke
+        run: python scripts/smoke_supabase_primary.py
+
+      - name: Optional deployed API readiness check
+        env:
+          DATABASE_AGENT_URL: ${{ secrets.DATABASE_AGENT_URL }}
+          DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
+        run: |
+          if [[ -z "$DATABASE_AGENT_URL" ]]; then
+            echo "DATABASE_AGENT_URL not configured; skipping deployed API check"
+            exit 0
+          fi
+          headers=()
+          if [[ -n "$DATABASE_AGENT_API_KEY" ]]; then
+            headers=(-H "X-API-KEY: $DATABASE_AGENT_API_KEY")
+          fi
+          body="$(mktemp)"
+          status="$(curl --silent --show-error --output "$body" --write-out '%{http_code}' \
+            "${headers[@]}" "${DATABASE_AGENT_URL%/}/ready")"
+          test "$status" = "200" || {
+            echo "Database_Agent readiness check failed with HTTP $status" >&2
+            exit 1
+          }
+          python - "$body" <<'PY'
+          import json
+          import sys
+          payload = json.load(open(sys.argv[1], encoding='utf-8'))
+          data = payload.get('data') or {}
+          assert data.get('ready') is True
+          assert data.get('provider') == 'supabase'
+          assert data.get('tls') is True
+          assert data.get('schema_identity_match') is True
+          PY

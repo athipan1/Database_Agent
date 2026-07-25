@@ -37,7 +37,7 @@ def env_bool(
 
 @dataclass(frozen=True)
 class Settings:
-    """Runtime settings that were previously assembled inside ``main.py``."""
+    """Validated runtime and database cutover settings."""
 
     trading_mode: str = "PAPER"
     database_dev_mode: bool = False
@@ -54,6 +54,9 @@ class Settings:
     database_pool_min: int = 1
     database_pool_max: int = 20
     database_connect_timeout_seconds: int = 5
+    database_cutover_guard_enabled: bool = False
+    database_expected_provider: Optional[str] = None
+    database_require_schema_identity: bool = False
 
     @classmethod
     def from_environ(
@@ -64,6 +67,9 @@ class Settings:
         database_provider = source.get("DATABASE_PROVIDER", "postgres").strip().lower()
         default_ssl_mode = "require" if database_provider == "supabase" else "prefer"
         default_create_if_missing = database_provider != "supabase"
+        expected_provider = (
+            source.get("DATABASE_EXPECTED_PROVIDER", "").strip().lower() or None
+        )
         return cls(
             trading_mode=source.get("TRADING_MODE", "PAPER").strip().upper(),
             database_dev_mode=env_bool(
@@ -101,6 +107,17 @@ class Settings:
             database_connect_timeout_seconds=int(
                 source.get("DATABASE_CONNECT_TIMEOUT_SECONDS", "5")
             ),
+            database_cutover_guard_enabled=env_bool(
+                "DATABASE_CUTOVER_GUARD_ENABLED",
+                False,
+                environ=source,
+            ),
+            database_expected_provider=expected_provider,
+            database_require_schema_identity=env_bool(
+                "DATABASE_REQUIRE_SCHEMA_IDENTITY",
+                database_provider == "supabase",
+                environ=source,
+            ),
         )
 
     def validate(self) -> None:
@@ -123,7 +140,9 @@ class Settings:
         if self.database_pool_min < 1:
             raise ValueError("DATABASE_POOL_MIN must be at least 1")
         if self.database_pool_max < self.database_pool_min:
-            raise ValueError("DATABASE_POOL_MAX must be greater than or equal to DATABASE_POOL_MIN")
+            raise ValueError(
+                "DATABASE_POOL_MAX must be greater than or equal to DATABASE_POOL_MIN"
+            )
         if self.database_pool_max > 50:
             raise ValueError("DATABASE_POOL_MAX must not exceed 50")
         if not 1 <= self.database_connect_timeout_seconds <= 60:
@@ -140,6 +159,24 @@ class Settings:
             if self.database_ssl_mode not in {"require", "verify-ca", "verify-full"}:
                 raise ValueError(
                     "DATABASE_SSL_MODE must require TLS for DATABASE_PROVIDER=supabase"
+                )
+        if self.database_expected_provider is not None:
+            if self.database_expected_provider not in _ALLOWED_DATABASE_PROVIDERS:
+                raise ValueError(
+                    "DATABASE_EXPECTED_PROVIDER must be postgres or supabase"
+                )
+        if self.database_cutover_guard_enabled:
+            if not self.database_expected_provider:
+                raise ValueError(
+                    "DATABASE_EXPECTED_PROVIDER is required when cutover guard is enabled"
+                )
+            if self.database_expected_provider != self.database_provider:
+                raise ValueError(
+                    "DATABASE_PROVIDER must match DATABASE_EXPECTED_PROVIDER when cutover guard is enabled"
+                )
+            if self.database_dev_mode:
+                raise ValueError(
+                    "DATABASE_DEV_MODE must be false when cutover guard is enabled"
                 )
 
 

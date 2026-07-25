@@ -1,4 +1,4 @@
-"""Health and operational system routes."""
+"""Health, readiness, and operational system routes."""
 
 from __future__ import annotations
 
@@ -8,12 +8,15 @@ from typing import Any
 from fastapi import APIRouter, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from app.core.config import Settings
+from app.services.database_readiness import inspect_database_readiness
 from models import StandardAgentResponse
 
 
 ROUTE_SIGNATURES = frozenset(
     {
         ("/health", "GET"),
+        ("/ready", "GET"),
         ("/metrics", "GET"),
     }
 )
@@ -48,6 +51,27 @@ def create_system_router(runtime: Any) -> APIRouter:
                 "trading_mode": runtime.TRADING_MODE,
                 "database_emergency_halt": runtime.DATABASE_EMERGENCY_HALT,
             }
+        )
+
+    @router.get("/ready", response_model=StandardAgentResponse[dict])
+    async def readiness_check(response: Response):
+        """Return 503 until the configured primary passes all cutover gates."""
+
+        # main.py validates this environment snapshot before the app is built.
+        # Reading it here preserves cutover-only fields without widening the
+        # patch-compatible runtime facade.
+        report = inspect_database_readiness(runtime.db, Settings.from_environ())
+        if report["ready"]:
+            return runtime.wrap_response(data=report)
+        response.status_code = 503
+        return runtime.wrap_response(
+            status="error",
+            data=report,
+            error={
+                "code": "DATABASE_NOT_READY",
+                "message": "Database primary did not pass readiness gates",
+                "retryable": True,
+            },
         )
 
     @router.get("/metrics")
