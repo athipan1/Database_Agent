@@ -51,6 +51,33 @@ def _float_or_zero(value: Any) -> float:
         return 0.0
 
 
+def _existing_columns(cursor, db_type: str, table_name: str) -> set[str]:
+    if db_type == "sqlite":
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        return {str(row[1]) for row in (cursor.fetchall() or [])}
+
+    cursor.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = %s
+        """,
+        (table_name,),
+    )
+    return {str(row[0]) for row in (cursor.fetchall() or [])}
+
+
+def _ensure_columns(cursor, db_type: str, table_name: str, columns: Dict[str, str]) -> None:
+    existing = _existing_columns(cursor, db_type, table_name)
+    for column_name, column_type in columns.items():
+        if column_name in existing:
+            continue
+        cursor.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+        )
+        existing.add(column_name)
+
+
 def setup_skill_performance_tables(db) -> None:
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
@@ -58,6 +85,7 @@ def setup_skill_performance_tables(db) -> None:
             json_type = "TEXT" if db.db_type == "sqlite" else "JSONB"
             timestamp_type = "TEXT" if db.db_type == "sqlite" else "TIMESTAMPTZ"
             numeric_type = "REAL" if db.db_type == "sqlite" else "DOUBLE PRECISION"
+
             cursor.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS skill_execution_logs (
@@ -108,6 +136,60 @@ def setup_skill_performance_tables(db) -> None:
                 );
                 """
             )
+
+            _ensure_columns(
+                cursor,
+                db.db_type,
+                "skill_execution_logs",
+                {
+                    "execution_log_id": "TEXT",
+                    "account_id": "TEXT",
+                    "skill_id": "TEXT",
+                    "skill_name": "TEXT",
+                    "symbol": "TEXT",
+                    "strategy_bucket": "TEXT",
+                    "market_regime": "TEXT",
+                    "signal": "TEXT",
+                    "confidence": numeric_type,
+                    "reason": "TEXT",
+                    "input_payload": json_type,
+                    "output_payload": json_type,
+                    "execution_status": "TEXT",
+                    "error": "TEXT",
+                    "elapsed_ms": numeric_type,
+                    "source_agent": "TEXT",
+                    "run_id": "TEXT",
+                    "metadata": json_type,
+                    "created_at": timestamp_type,
+                },
+            )
+            _ensure_columns(
+                cursor,
+                db.db_type,
+                "skill_trade_outcomes",
+                {
+                    "outcome_id": "TEXT",
+                    "execution_log_id": "TEXT",
+                    "skill_id": "TEXT",
+                    "account_id": "TEXT",
+                    "symbol": "TEXT",
+                    "strategy_bucket": "TEXT",
+                    "market_regime": "TEXT",
+                    "entry_price": numeric_type,
+                    "exit_price": numeric_type,
+                    "realized_pl": numeric_type,
+                    "realized_pl_pct": numeric_type,
+                    "holding_minutes": "INTEGER",
+                    "max_favorable_excursion": numeric_type,
+                    "max_adverse_excursion": numeric_type,
+                    "outcome": "TEXT",
+                    "source_agent": "TEXT",
+                    "metadata": json_type,
+                    "closed_at": timestamp_type,
+                    "created_at": timestamp_type,
+                },
+            )
+
             if db.db_type == "postgres":
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS idx_skill_execution_logs_skill_context "
