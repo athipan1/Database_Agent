@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from app.core.config import Settings
 from app.services.database_readiness import inspect_database_readiness
 from models import StandardAgentResponse
 
@@ -56,7 +57,10 @@ def create_system_router(runtime: Any) -> APIRouter:
     async def readiness_check(response: Response):
         """Return 503 until the configured primary passes all cutover gates."""
 
-        report = inspect_database_readiness(runtime.db, runtime.current_settings())
+        # main.py validates this environment snapshot before the app is built.
+        # Reading it here preserves cutover-only fields without widening the
+        # patch-compatible runtime facade.
+        report = inspect_database_readiness(runtime.db, Settings.from_environ())
         if report["ready"]:
             return runtime.wrap_response(data=report)
         response.status_code = 503
