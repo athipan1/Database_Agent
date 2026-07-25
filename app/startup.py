@@ -13,6 +13,7 @@ from policy_review_repository import setup_policy_review_table
 from profit_lifecycle_repository import setup_profit_lifecycle_tables
 from protective_order_repository import setup_protective_order_columns
 from risk_approval_repository import setup_risk_approval_table
+from schema_identity_repository import setup_schema_identity_table
 
 
 def setup_runtime_tables(db) -> None:
@@ -26,6 +27,7 @@ def setup_runtime_tables(db) -> None:
     setup_plan_record_table(db)
     setup_policy_review_table(db)
     setup_profit_lifecycle_tables(db)
+    setup_schema_identity_table(db)
 
 
 def log_database_stats(db) -> None:
