@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from app.core.postgres_tls import connection_uses_tls
 from schema_identity_repository import (
     SCHEMA_SHA256,
     SCHEMA_VERSION,
@@ -17,23 +18,27 @@ def _postgres_transport_state(db) -> Dict[str, Any]:
         try:
             cursor.execute(
                 """
-                SELECT
-                    current_setting('server_version_num')::integer AS server_version_num,
-                    COALESCE(
-                        (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()),
-                        false
-                    ) AS tls
+                SELECT current_setting('server_version_num')::integer
+                    AS server_version_num
                 """
             )
             row = cursor.fetchone()
+            tls = connection_uses_tls(conn, cursor)
             if isinstance(row, dict):
-                return dict(row)
+                return {
+                    "server_version_num": int(row["server_version_num"]),
+                    "tls": tls,
+                }
             try:
-                return dict(row)
+                mapped = dict(row)
+                return {
+                    "server_version_num": int(mapped["server_version_num"]),
+                    "tls": tls,
+                }
             except (TypeError, ValueError):
                 return {
                     "server_version_num": int(row[0]),
-                    "tls": bool(row[1]),
+                    "tls": tls,
                 }
         finally:
             cursor.close()
