@@ -18,8 +18,8 @@ PostgreSQL to the `Database_Agent_Trading` Supabase project.
 ## Merge order
 
 1. Merge PR 1, managed Supabase PostgreSQL connection support.
-2. Retarget and merge PR 2, canonical schema and verification.
-3. Retarget and merge PR 3, readiness and cutover controls.
+2. Merge PR 2, canonical schema and verification.
+3. Merge PR 3, readiness and cutover controls.
 
 Deploy the merged code before changing the primary connection variables.
 
@@ -29,6 +29,11 @@ For the manual GitHub cutover workflow:
 
 - `RAILWAY_DATABASE_URL`: source Railway PostgreSQL connection string
 - `SUPABASE_DATABASE_URL`: target Supabase Session Pooler connection string
+
+For the deployed API smoke workflow:
+
+- `DATABASE_AGENT_URL`: public Database_Agent URL
+- `DATABASE_AGENT_API_KEY`: Database_Agent API key
 
 For Railway Database_Agent after cutover:
 
@@ -101,8 +106,11 @@ Do not continue when any count differs.
    - schema identity matched
    - no readiness failure reasons
 6. Confirm `GET /health` reports a connected database.
-7. Run one read-only Manager_Agent integration check.
-8. Re-enable the hourly workflow in simulator or paper mode first.
+7. Run the `Database Primary API Smoke` workflow with expected provider
+   `supabase`. It creates and reads one `ZZTEST` signal marked
+   `synthetic=true` and `safe_for_trading=false`.
+8. Run one read-only Manager_Agent integration check.
+9. Re-enable the hourly workflow in simulator or paper mode first.
 
 ## Observation window
 
