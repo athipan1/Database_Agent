@@ -9,6 +9,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.core.middleware import install_correlation_id_middleware
 from app.core.responses import AGENT_VERSION, install_exception_handlers
+from app.core.supabase_events import install_supabase_event_capture
 from app.lifespan import create_runtime_lifespan
 from app.route_registry import assert_unique_routes, mount_router_routes
 from app.routers.accounts_orders import create_accounts_orders_router
@@ -31,6 +32,7 @@ def create_application(runtime: Any) -> FastAPI:
 
     install_correlation_id_middleware(app, runtime.correlation_id_var)
     install_exception_handlers(app, runtime.wrap_response)
+    install_supabase_event_capture(app, runtime)
 
     mount_router_routes(app, create_system_router(runtime))
     mount_router_routes(
