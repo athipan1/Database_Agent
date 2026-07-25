@@ -1,9 +1,4 @@
-"""Patch-compatible runtime dependencies for the Database Agent API.
-
-The module is deliberately free of FastAPI route declarations. It exposes the
-objects and helper functions consumed by router factories, startup orchestration,
-and existing tests that patch attributes through ``main``.
-"""
+"""Patch-compatible dependencies for the modular Database Agent runtime."""
 
 from __future__ import annotations
 
@@ -16,10 +11,7 @@ from fastapi import HTTPException
 from alpaca_client import AlpacaClient
 from app.core.config import Settings
 from app.core.logging import configure_logging
-from app.core.middleware import (
-    create_correlation_id_context,
-    create_correlation_id_dependency,
-)
+from app.core.middleware import create_correlation_id_context, create_correlation_id_dependency
 from app.core.responses import wrap_response
 from app.core.security import create_api_key_dependency
 from app.services.market_data import (
@@ -30,11 +22,7 @@ from app.services.market_data import (
 )
 from app.services.scheduler import RuntimeScheduler
 from app.services.supabase_replication import SupabaseReplicationWorker
-from app.startup import (
-    log_database_stats as collect_database_stats,
-    shutdown_runtime,
-    startup_runtime,
-)
+from app.startup import log_database_stats as collect_database_stats, shutdown_runtime, startup_runtime
 from broker_sync_repository import sync_broker_state
 from execution_job_repository import (
     claim_next_execution_job,
@@ -62,9 +50,7 @@ from risk_approval_repository import (
     mark_risk_approval_used,
 )
 from session_risk_repository import build_session_risk_snapshot
-from supabase_replication_repository import (
-    enqueue_supabase_event as persist_supabase_event,
-)
+from supabase_replication_repository import enqueue_supabase_event as persist_supabase_event
 from trading_db import TradingDB
 
 
