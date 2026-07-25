@@ -4,10 +4,10 @@ The Database Agent is a FastAPI-based service responsible for managing all datab
 
 ## Core Responsibilities
 
-1.  **Decision Logging**: Records every `buy`/`sell`/`hold` decision from all trading agents, linking them with a unique `correlation_id` for end-to-end traceability.
-2.  **Outcome Tracking**: Stores the actual results of trades, such as profit/loss and drawdown over various time horizons (e.g., t+1, t+7, t+30).
-3.  **Data Source for Learning**: Acts as the single source of truth for the `LearningAgent` to evaluate agent performance, calculate rewards/penalties, and adjust agent weights.
-4.  **System Auditing**: Provides a complete audit trail. A single `correlation_id` can be used to trace an entire decision and execution chain, simplifying debugging and enhancing explainability.
+1. **Decision Logging**: Records every `buy`/`sell`/`hold` decision from all trading agents, linking them with a unique `correlation_id` for end-to-end traceability.
+2. **Outcome Tracking**: Stores the actual results of trades, such as profit/loss and drawdown over various time horizons.
+3. **Data Source for Learning**: Acts as the single source of truth for the `LearningAgent` to evaluate agent performance and adjust agent weights.
+4. **System Auditing**: Provides an audit trail that can be traced by `correlation_id`.
 
 ## Profit decision lifecycle
 
@@ -24,80 +24,89 @@ migrations/002_profit_lifecycle.up.sql
 migrations/002_profit_lifecycle.down.sql
 ```
 
+## Database providers
+
+The repository supports two PostgreSQL deployment modes without changing its
+repository or API contracts.
+
+### Local or self-managed PostgreSQL
+
+```ini
+DATABASE_PROVIDER=postgres
+DATABASE_URL=postgresql://trading_user:password@db:5432/trading_db
+DATABASE_SSL_MODE=prefer
+DATABASE_CREATE_IF_MISSING=true
+```
+
+This preserves the existing behavior that may create the configured database
+through the maintenance `postgres` database.
+
+### Supabase PostgreSQL primary
+
+```ini
+DATABASE_PROVIDER=supabase
+DATABASE_URL=<server-side Supabase Session Pooler connection string>
+DATABASE_SSL_MODE=require
+DATABASE_CREATE_IF_MISSING=false
+DATABASE_POOL_MIN=1
+DATABASE_POOL_MAX=20
+DATABASE_CONNECT_TIMEOUT_SECONDS=5
+```
+
+Use the Session Pooler connection string intended for persistent server
+processes. Store the database password only in Railway Variables or GitHub
+Secrets. Never put it in the repository or frontend configuration.
+
+In managed mode Database Agent:
+
+- does not connect to a maintenance database
+- never attempts `CREATE DATABASE`
+- requires TLS for Supabase
+- validates the pool with `SELECT 1` before serving requests
+- keeps the existing `TradingDB` repository interface
+
 ---
 
 ## Getting Started
 
-This guide will walk you through setting up and running the Database Agent using Docker and Docker Compose.
-
 ### Prerequisites
 
-*   Docker
-*   Docker Compose
+- Docker
+- Docker Compose
 
 ### 1. Set Up Environment Variables
-
-The service is configured using environment variables. First, create a `.env` file by copying the example file:
 
 ```bash
 cp .env.example .env
 ```
 
-Next, open the `.env` file and customize the variables:
-
-*   `POSTGRES_PASSWORD`: **(Required)** Set a strong and unique password for the PostgreSQL database. This is used by the database container itself.
-*   `DATABASE_URL`: **(Required)** Update the password in this URL to match the `POSTGRES_PASSWORD` you set above. This is the full connection string the application uses.
-*   `DATABASE_AGENT_API_KEY`: **(Required)** Generate a secure, random API key that clients will use to authenticate with this service. You can generate one with `openssl rand -hex 32`.
-
-**Example `.env` file:**
+For local Docker, customize:
 
 ```ini
-# PostgreSQL Database Configuration
 POSTGRES_USER=trading_user
 POSTGRES_PASSWORD=your_super_secret_password
 POSTGRES_DB=trading_db
 POSTGRES_HOST=db
 POSTGRES_PORT=5432
-
-# Application Configuration
+DATABASE_PROVIDER=postgres
 DATABASE_URL=postgresql://trading_user:your_super_secret_password@db:5432/trading_db
-
-# API Security Configuration
 DATABASE_AGENT_API_KEY=your_generated_api_key_here
 ```
 
-### 2. Build and Run the Service
+Generate the API key with `openssl rand -hex 32` or an equivalent secure random generator.
 
-With the `.env` file configured, you can start the entire stack (the API service and the PostgreSQL database) using Docker Compose:
+### 2. Build and Run the Service
 
 ```bash
 sudo docker compose up --build -d
 ```
 
-*   `--build`: Forces a rebuild of the Docker image to ensure your latest code changes are included.
-*   `-d`: Runs the containers in detached mode (in the background).
-
 ### 3. Verify the Service
 
-You can check if the service is running correctly in a few ways:
+```bash
+sudo docker compose ps
+sudo docker compose logs -f api
+curl http://localhost:8000/health
+```
 
-*   **Check container status:**
-    ```bash
-    sudo docker compose ps
-    ```
-    You should see both the `trading_db_api` and `trading_db_postgres` containers running with a "healthy" status.
-
-*   **View logs:**
-    ```bash
-    sudo docker compose logs -f api
-    ```
-    This will show you the real-time logs for the API service. Look for a message indicating a successful connection to the PostgreSQL database.
-
-*   **Access the health check endpoint:**
-    ```bash
-    curl http://localhost:8000/health
-    ```
-    If the service is running correctly, you will receive the following response:
-    ```json
-    {"status":"ok"}
-    ```
+The health response uses the standard Database Agent envelope and reports whether the active PostgreSQL connection is connected.
