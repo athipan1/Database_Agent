@@ -10,7 +10,7 @@ from pathlib import Path
 import psycopg2
 import psycopg2.extras
 
-from app.core.postgres_tls import connection_uses_tls
+from postgres_tls import connection_uses_tls
 
 
 MANIFEST_PATH = Path(__file__).resolve().parents[1] / "supabase" / "schema_manifest.json"
