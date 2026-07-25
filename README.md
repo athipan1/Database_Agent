@@ -4,10 +4,10 @@ The Database Agent is a FastAPI-based service responsible for managing all datab
 
 ## Core Responsibilities
 
-1.  **Decision Logging**: Records every `buy`/`sell`/`hold` decision from all trading agents, linking them with a unique `correlation_id` for end-to-end traceability.
-2.  **Outcome Tracking**: Stores the actual results of trades, such as profit/loss and drawdown over various time horizons (e.g., t+1, t+7, t+30).
-3.  **Data Source for Learning**: Acts as the single source of truth for the `LearningAgent` to evaluate agent performance, calculate rewards/penalties, and adjust agent weights.
-4.  **System Auditing**: Provides a complete audit trail. A single `correlation_id` can be used to trace an entire decision and execution chain, simplifying debugging and enhancing explainability.
+1. **Decision Logging**: Records every `buy`/`sell`/`hold` decision from all trading agents, linking them with a unique `correlation_id` for end-to-end traceability.
+2. **Outcome Tracking**: Stores the actual results of trades, such as profit/loss and drawdown over various time horizons.
+3. **Data Source for Learning**: Acts as the single source of truth for the `LearningAgent` to evaluate agent performance, calculate rewards/penalties, and adjust agent weights.
+4. **System Auditing**: Provides a complete audit trail. A single `correlation_id` can trace an entire decision and execution chain.
 
 ## Profit decision lifecycle
 
@@ -24,80 +24,103 @@ migrations/002_profit_lifecycle.up.sql
 migrations/002_profit_lifecycle.down.sql
 ```
 
+## Supabase asynchronous mirror
+
+Railway PostgreSQL remains the only source of truth for trading decisions and
+execution state. Supabase is an optional secondary mirror for dashboards,
+analytics, and reporting.
+
+The request path never calls Supabase directly. Successful write responses are
+stored in the local `supabase_replication_outbox` table. A background worker then
+upserts versioned events into Supabase by deterministic `event_id`. Failed
+network calls are retried with exponential backoff, and repeated events remain
+idempotent.
+
+Required Railway variables:
+
+```ini
+SUPABASE_REPLICATION_ENABLED=true
+SUPABASE_URL=https://djolfrfrghhvwmpvtkpt.supabase.co
+SUPABASE_SECRET_KEY=<server-side secret key>
+SUPABASE_TABLE=database_agent_events
+SUPABASE_REPLICATION_INTERVAL_SECONDS=10
+SUPABASE_REPLICATION_BATCH_SIZE=50
+SUPABASE_REPLICATION_MAX_ATTEMPTS=10
+```
+
+`SUPABASE_SECRET_KEY` must be a server-only Supabase secret key or legacy
+service-role key. Never put it in frontend code, Vite variables, browser storage,
+or logs. A publishable or anon key is intentionally insufficient because the
+mirror table has RLS enabled and grants no access to `anon` or `authenticated`.
+
+`GET /health` reports safe replication information such as enabled/configured
+state, worker status, and outbox counts. It never returns the URL or key.
+
 ---
 
 ## Getting Started
 
-This guide will walk you through setting up and running the Database Agent using Docker and Docker Compose.
+This guide walks through running the Database Agent using Docker and Docker Compose.
 
 ### Prerequisites
 
-*   Docker
-*   Docker Compose
+* Docker
+* Docker Compose
 
 ### 1. Set Up Environment Variables
 
-The service is configured using environment variables. First, create a `.env` file by copying the example file:
+Create a `.env` file by copying the example file:
 
 ```bash
 cp .env.example .env
 ```
 
-Next, open the `.env` file and customize the variables:
+Customize the variables:
 
-*   `POSTGRES_PASSWORD`: **(Required)** Set a strong and unique password for the PostgreSQL database. This is used by the database container itself.
-*   `DATABASE_URL`: **(Required)** Update the password in this URL to match the `POSTGRES_PASSWORD` you set above. This is the full connection string the application uses.
-*   `DATABASE_AGENT_API_KEY`: **(Required)** Generate a secure, random API key that clients will use to authenticate with this service. You can generate one with `openssl rand -hex 32`.
+* `POSTGRES_PASSWORD`: Set a strong and unique password for PostgreSQL.
+* `DATABASE_URL`: Use the same password and correct PostgreSQL host.
+* `DATABASE_AGENT_API_KEY`: Generate a secure random API key for service authentication.
 
-**Example `.env` file:**
+Example core configuration:
 
 ```ini
-# PostgreSQL Database Configuration
 POSTGRES_USER=trading_user
 POSTGRES_PASSWORD=your_super_secret_password
 POSTGRES_DB=trading_db
 POSTGRES_HOST=db
 POSTGRES_PORT=5432
-
-# Application Configuration
 DATABASE_URL=postgresql://trading_user:your_super_secret_password@db:5432/trading_db
-
-# API Security Configuration
 DATABASE_AGENT_API_KEY=your_generated_api_key_here
 ```
 
 ### 2. Build and Run the Service
 
-With the `.env` file configured, you can start the entire stack (the API service and the PostgreSQL database) using Docker Compose:
-
 ```bash
 sudo docker compose up --build -d
 ```
 
-*   `--build`: Forces a rebuild of the Docker image to ensure your latest code changes are included.
-*   `-d`: Runs the containers in detached mode (in the background).
+* `--build`: Rebuilds the image with the latest code.
+* `-d`: Runs the containers in the background.
 
 ### 3. Verify the Service
 
-You can check if the service is running correctly in a few ways:
+Check container status:
 
-*   **Check container status:**
-    ```bash
-    sudo docker compose ps
-    ```
-    You should see both the `trading_db_api` and `trading_db_postgres` containers running with a "healthy" status.
+```bash
+sudo docker compose ps
+```
 
-*   **View logs:**
-    ```bash
-    sudo docker compose logs -f api
-    ```
-    This will show you the real-time logs for the API service. Look for a message indicating a successful connection to the PostgreSQL database.
+View logs:
 
-*   **Access the health check endpoint:**
-    ```bash
-    curl http://localhost:8000/health
-    ```
-    If the service is running correctly, you will receive the following response:
-    ```json
-    {"status":"ok"}
-    ```
+```bash
+sudo docker compose logs -f api
+```
+
+Call the health endpoint:
+
+```bash
+curl http://localhost:8000/health
+```
+
+The response includes primary database connectivity and Supabase replication
+status inside the standard Database Agent response envelope.
