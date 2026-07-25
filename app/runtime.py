@@ -21,7 +21,7 @@ from app.services.market_data import (
     run_ingestion_job as run_market_data_ingestion,
 )
 from app.services.scheduler import RuntimeScheduler
-from app.services.supabase_replication import SupabaseReplicationWorker
+from app.services.supabase_runtime import build_supabase_replication_runtime
 from app.startup import log_database_stats as collect_database_stats, shutdown_runtime, startup_runtime
 from broker_sync_repository import sync_broker_state
 from execution_job_repository import (
@@ -50,7 +50,6 @@ from risk_approval_repository import (
     mark_risk_approval_used,
 )
 from session_risk_repository import build_session_risk_snapshot
-from supabase_replication_repository import enqueue_supabase_event as persist_supabase_event
 from trading_db import TradingDB
 
 
@@ -148,23 +147,10 @@ alpaca_client = AlpacaClient(
     secret_key=ALPACA_SECRET_KEY,
 )
 runtime_scheduler = RuntimeScheduler()
-supabase_replication_worker = SupabaseReplicationWorker(
-    db=db,
-    enabled=SUPABASE_REPLICATION_ENABLED,
-    url=SUPABASE_URL,
-    secret_key=SUPABASE_SECRET_KEY,
-    table=SUPABASE_TABLE,
-    interval_seconds=SUPABASE_REPLICATION_INTERVAL_SECONDS,
-    batch_size=SUPABASE_REPLICATION_BATCH_SIZE,
-    max_attempts=SUPABASE_REPLICATION_MAX_ATTEMPTS,
+supabase_replication_worker, enqueue_supabase_event = (
+    build_supabase_replication_runtime(db, current_settings())
 )
 app = None
-
-
-def enqueue_supabase_event(event: Dict[str, Any]) -> bool:
-    """Persist an event locally without calling Supabase in the request path."""
-
-    return persist_supabase_event(db, event)
 
 
 def _normalize_order_or_404(
