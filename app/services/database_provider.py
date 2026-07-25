@@ -20,6 +20,8 @@ class ManagedPostgresTradingDB(TradingDB):
 
     Managed providers already own the target database. This adapter therefore
     never connects to a maintenance database and never attempts CREATE DATABASE.
+    It also ignores the legacy ``USE_SQLITE`` test switch because silently
+    falling back to an in-memory database would be unsafe for a managed primary.
     """
 
     def __init__(
@@ -35,9 +37,11 @@ class ManagedPostgresTradingDB(TradingDB):
         super().__init__(max_retries=max_retries, initial_delay=initial_delay)
 
     def _connect_with_retry(self) -> None:
-        if self.db_type == "sqlite":
-            super()._connect_with_retry()
-            return
+        # ``TradingDB.__init__`` historically derives db_type from USE_SQLITE.
+        # A managed provider must never inherit that fallback because it would
+        # acknowledge writes in a transient in-memory database.
+        self.db_type = "postgres"
+        self.param_style = "%s"
 
         if not self._managed_database_url:
             raise ValueError(
