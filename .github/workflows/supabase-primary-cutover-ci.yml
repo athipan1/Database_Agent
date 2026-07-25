@@ -3,7 +3,7 @@ name: Supabase Primary Cutover CI
 on:
   pull_request:
     branches:
-      - agent/supabase-primary-schema
+      - main
 
 permissions:
   contents: read
@@ -39,13 +39,15 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
-      - name: Validate scripts
+      - name: Validate scripts and container readiness target
         run: |
           bash -n scripts/migrate_postgres_to_supabase.sh
           python -m py_compile \
             scripts/compare_primary_counts.py \
+            scripts/database_primary_api_smoke.py \
             scripts/smoke_supabase_primary.py \
             scripts/verify_supabase_primary_schema.py
+          grep -F 'http://localhost:8004/ready' Dockerfile
 
       - name: Run full test suite
         env:
