@@ -30,6 +30,32 @@ def create_system_router(runtime: Any) -> APIRouter:
         except Exception as exc:
             logging.warning("Health check database connection failed: %s", exc)
             is_connected = False
+
+        worker = getattr(runtime, "supabase_replication_worker", None)
+        if worker is None:
+            supabase_health = {
+                "enabled": False,
+                "configured": False,
+                "running": False,
+                "outbox": {"status": "unavailable"},
+            }
+        else:
+            try:
+                supabase_health = worker.health()
+            except Exception as exc:
+                logging.warning(
+                    "Supabase replication health lookup failed: %s",
+                    type(exc).__name__,
+                )
+                supabase_health = {
+                    "enabled": bool(
+                        getattr(runtime, "SUPABASE_REPLICATION_ENABLED", False)
+                    ),
+                    "configured": False,
+                    "running": False,
+                    "outbox": {"status": "unavailable"},
+                }
+
         return runtime.wrap_response(
             data={
                 "status": (
@@ -47,6 +73,7 @@ def create_system_router(runtime: Any) -> APIRouter:
                 "dev_mode": runtime.DATABASE_DEV_MODE,
                 "trading_mode": runtime.TRADING_MODE,
                 "database_emergency_halt": runtime.DATABASE_EMERGENCY_HALT,
+                "supabase_replication": supabase_health,
             }
         )
 
