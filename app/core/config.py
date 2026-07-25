@@ -33,7 +33,7 @@ def env_bool(
 
 @dataclass(frozen=True)
 class Settings:
-    """Runtime settings that were previously assembled inside ``main.py``."""
+    """Runtime settings assembled for the modular Database Agent."""
 
     trading_mode: str = "PAPER"
     database_dev_mode: bool = False
@@ -43,6 +43,13 @@ class Settings:
     default_dev_cash_balance: Decimal = Decimal("100000")
     alpaca_api_key: Optional[str] = None
     alpaca_secret_key: Optional[str] = None
+    supabase_replication_enabled: bool = False
+    supabase_url: Optional[str] = None
+    supabase_secret_key: Optional[str] = None
+    supabase_table: str = "database_agent_events"
+    supabase_replication_interval_seconds: float = 10.0
+    supabase_replication_batch_size: int = 50
+    supabase_replication_max_attempts: int = 10
 
     @classmethod
     def from_environ(
@@ -71,6 +78,26 @@ class Settings:
             ),
             alpaca_api_key=source.get("ALPACA_API_KEY") or None,
             alpaca_secret_key=source.get("ALPACA_SECRET_KEY") or None,
+            supabase_replication_enabled=env_bool(
+                "SUPABASE_REPLICATION_ENABLED",
+                False,
+                environ=source,
+            ),
+            supabase_url=source.get("SUPABASE_URL") or None,
+            supabase_secret_key=source.get("SUPABASE_SECRET_KEY") or None,
+            supabase_table=(
+                source.get("SUPABASE_TABLE", "database_agent_events").strip()
+                or "database_agent_events"
+            ),
+            supabase_replication_interval_seconds=float(
+                source.get("SUPABASE_REPLICATION_INTERVAL_SECONDS", "10")
+            ),
+            supabase_replication_batch_size=int(
+                source.get("SUPABASE_REPLICATION_BATCH_SIZE", "50")
+            ),
+            supabase_replication_max_attempts=int(
+                source.get("SUPABASE_REPLICATION_MAX_ATTEMPTS", "10")
+            ),
         )
 
     def validate(self) -> None:
@@ -85,6 +112,29 @@ class Settings:
         if not self.database_agent_api_key and not self.database_dev_mode:
             raise ValueError(
                 "DATABASE_AGENT_API_KEY is required outside DATABASE_DEV_MODE"
+            )
+        if self.supabase_replication_enabled:
+            if not self.supabase_url:
+                raise ValueError(
+                    "SUPABASE_URL is required when SUPABASE_REPLICATION_ENABLED=true"
+                )
+            if not self.supabase_url.startswith("https://"):
+                raise ValueError("SUPABASE_URL must use HTTPS")
+            if not self.supabase_secret_key:
+                raise ValueError(
+                    "SUPABASE_SECRET_KEY is required when SUPABASE_REPLICATION_ENABLED=true"
+                )
+        if self.supabase_replication_interval_seconds < 1:
+            raise ValueError(
+                "SUPABASE_REPLICATION_INTERVAL_SECONDS must be at least 1"
+            )
+        if not 1 <= self.supabase_replication_batch_size <= 500:
+            raise ValueError(
+                "SUPABASE_REPLICATION_BATCH_SIZE must be between 1 and 500"
+            )
+        if not 1 <= self.supabase_replication_max_attempts <= 100:
+            raise ValueError(
+                "SUPABASE_REPLICATION_MAX_ATTEMPTS must be between 1 and 100"
             )
 
 
