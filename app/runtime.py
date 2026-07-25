@@ -1,13 +1,12 @@
 """Patch-compatible runtime dependencies for the Database Agent API.
 
-The module is deliberately free of FastAPI route declarations.  It exposes the
+The module is deliberately free of FastAPI route declarations. It exposes the
 objects and helper functions consumed by router factories, startup orchestration,
 and existing tests that patch attributes through ``main``.
 """
 
 from __future__ import annotations
 
-import os
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Union
 
@@ -30,6 +29,7 @@ from app.services.market_data import (
     run_ingestion_job as run_market_data_ingestion,
 )
 from app.services.scheduler import RuntimeScheduler
+from app.services.supabase_replication import SupabaseReplicationWorker
 from app.startup import (
     log_database_stats as collect_database_stats,
     shutdown_runtime,
@@ -62,6 +62,9 @@ from risk_approval_repository import (
     mark_risk_approval_used,
 )
 from session_risk_repository import build_session_risk_snapshot
+from supabase_replication_repository import (
+    enqueue_supabase_event as persist_supabase_event,
+)
 from trading_db import TradingDB
 
 
@@ -75,6 +78,13 @@ DEFAULT_DEV_ACCOUNT_ID = "1"
 DEFAULT_DEV_CASH_BALANCE = Decimal("100000")
 ALPACA_API_KEY: Optional[str] = None
 ALPACA_SECRET_KEY: Optional[str] = None
+SUPABASE_REPLICATION_ENABLED = False
+SUPABASE_URL: Optional[str] = None
+SUPABASE_SECRET_KEY: Optional[str] = None
+SUPABASE_TABLE = "database_agent_events"
+SUPABASE_REPLICATION_INTERVAL_SECONDS = 10.0
+SUPABASE_REPLICATION_BATCH_SIZE = 50
+SUPABASE_REPLICATION_MAX_ATTEMPTS = 10
 
 
 def apply_settings(settings: Settings) -> None:
@@ -88,6 +98,13 @@ def apply_settings(settings: Settings) -> None:
     global DEFAULT_DEV_CASH_BALANCE
     global ALPACA_API_KEY
     global ALPACA_SECRET_KEY
+    global SUPABASE_REPLICATION_ENABLED
+    global SUPABASE_URL
+    global SUPABASE_SECRET_KEY
+    global SUPABASE_TABLE
+    global SUPABASE_REPLICATION_INTERVAL_SECONDS
+    global SUPABASE_REPLICATION_BATCH_SIZE
+    global SUPABASE_REPLICATION_MAX_ATTEMPTS
 
     TRADING_MODE = settings.trading_mode
     DATABASE_DEV_MODE = settings.database_dev_mode
@@ -97,6 +114,15 @@ def apply_settings(settings: Settings) -> None:
     DEFAULT_DEV_CASH_BALANCE = settings.default_dev_cash_balance
     ALPACA_API_KEY = settings.alpaca_api_key
     ALPACA_SECRET_KEY = settings.alpaca_secret_key
+    SUPABASE_REPLICATION_ENABLED = settings.supabase_replication_enabled
+    SUPABASE_URL = settings.supabase_url
+    SUPABASE_SECRET_KEY = settings.supabase_secret_key
+    SUPABASE_TABLE = settings.supabase_table
+    SUPABASE_REPLICATION_INTERVAL_SECONDS = (
+        settings.supabase_replication_interval_seconds
+    )
+    SUPABASE_REPLICATION_BATCH_SIZE = settings.supabase_replication_batch_size
+    SUPABASE_REPLICATION_MAX_ATTEMPTS = settings.supabase_replication_max_attempts
 
 
 def current_settings() -> Settings:
@@ -111,6 +137,15 @@ def current_settings() -> Settings:
         default_dev_cash_balance=DEFAULT_DEV_CASH_BALANCE,
         alpaca_api_key=ALPACA_API_KEY,
         alpaca_secret_key=ALPACA_SECRET_KEY,
+        supabase_replication_enabled=SUPABASE_REPLICATION_ENABLED,
+        supabase_url=SUPABASE_URL,
+        supabase_secret_key=SUPABASE_SECRET_KEY,
+        supabase_table=SUPABASE_TABLE,
+        supabase_replication_interval_seconds=(
+            SUPABASE_REPLICATION_INTERVAL_SECONDS
+        ),
+        supabase_replication_batch_size=SUPABASE_REPLICATION_BATCH_SIZE,
+        supabase_replication_max_attempts=SUPABASE_REPLICATION_MAX_ATTEMPTS,
     )
 
 
@@ -127,7 +162,23 @@ alpaca_client = AlpacaClient(
     secret_key=ALPACA_SECRET_KEY,
 )
 runtime_scheduler = RuntimeScheduler()
+supabase_replication_worker = SupabaseReplicationWorker(
+    db=db,
+    enabled=SUPABASE_REPLICATION_ENABLED,
+    url=SUPABASE_URL,
+    secret_key=SUPABASE_SECRET_KEY,
+    table=SUPABASE_TABLE,
+    interval_seconds=SUPABASE_REPLICATION_INTERVAL_SECONDS,
+    batch_size=SUPABASE_REPLICATION_BATCH_SIZE,
+    max_attempts=SUPABASE_REPLICATION_MAX_ATTEMPTS,
+)
 app = None
+
+
+def enqueue_supabase_event(event: Dict[str, Any]) -> bool:
+    """Persist an event locally without calling Supabase in the request path."""
+
+    return persist_supabase_event(db, event)
 
 
 def _normalize_order_or_404(
