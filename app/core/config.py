@@ -14,6 +14,10 @@ from typing import Mapping, Optional
 
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "y", "on"})
+_ALLOWED_DATABASE_PROVIDERS = frozenset({"postgres", "supabase"})
+_ALLOWED_SSL_MODES = frozenset(
+    {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
+)
 
 
 def env_bool(
@@ -43,6 +47,13 @@ class Settings:
     default_dev_cash_balance: Decimal = Decimal("100000")
     alpaca_api_key: Optional[str] = None
     alpaca_secret_key: Optional[str] = None
+    database_provider: str = "postgres"
+    database_url_configured: bool = False
+    database_ssl_mode: str = "prefer"
+    database_create_if_missing: bool = True
+    database_pool_min: int = 1
+    database_pool_max: int = 20
+    database_connect_timeout_seconds: int = 5
 
     @classmethod
     def from_environ(
@@ -50,6 +61,9 @@ class Settings:
         environ: Optional[Mapping[str, str]] = None,
     ) -> "Settings":
         source = os.environ if environ is None else environ
+        database_provider = source.get("DATABASE_PROVIDER", "postgres").strip().lower()
+        default_ssl_mode = "require" if database_provider == "supabase" else "prefer"
+        default_create_if_missing = database_provider != "supabase"
         return cls(
             trading_mode=source.get("TRADING_MODE", "PAPER").strip().upper(),
             database_dev_mode=env_bool(
@@ -71,6 +85,22 @@ class Settings:
             ),
             alpaca_api_key=source.get("ALPACA_API_KEY") or None,
             alpaca_secret_key=source.get("ALPACA_SECRET_KEY") or None,
+            database_provider=database_provider,
+            database_url_configured=bool(source.get("DATABASE_URL")),
+            database_ssl_mode=source.get(
+                "DATABASE_SSL_MODE",
+                default_ssl_mode,
+            ).strip().lower(),
+            database_create_if_missing=env_bool(
+                "DATABASE_CREATE_IF_MISSING",
+                default_create_if_missing,
+                environ=source,
+            ),
+            database_pool_min=int(source.get("DATABASE_POOL_MIN", "1")),
+            database_pool_max=int(source.get("DATABASE_POOL_MAX", "20")),
+            database_connect_timeout_seconds=int(
+                source.get("DATABASE_CONNECT_TIMEOUT_SECONDS", "5")
+            ),
         )
 
     def validate(self) -> None:
@@ -86,6 +116,31 @@ class Settings:
             raise ValueError(
                 "DATABASE_AGENT_API_KEY is required outside DATABASE_DEV_MODE"
             )
+        if self.database_provider not in _ALLOWED_DATABASE_PROVIDERS:
+            raise ValueError("DATABASE_PROVIDER must be postgres or supabase")
+        if self.database_ssl_mode not in _ALLOWED_SSL_MODES:
+            raise ValueError("DATABASE_SSL_MODE is not a supported PostgreSQL sslmode")
+        if self.database_pool_min < 1:
+            raise ValueError("DATABASE_POOL_MIN must be at least 1")
+        if self.database_pool_max < self.database_pool_min:
+            raise ValueError("DATABASE_POOL_MAX must be greater than or equal to DATABASE_POOL_MIN")
+        if self.database_pool_max > 50:
+            raise ValueError("DATABASE_POOL_MAX must not exceed 50")
+        if not 1 <= self.database_connect_timeout_seconds <= 60:
+            raise ValueError(
+                "DATABASE_CONNECT_TIMEOUT_SECONDS must be between 1 and 60"
+            )
+        if self.database_provider == "supabase":
+            if not self.database_url_configured:
+                raise ValueError("DATABASE_URL is required for DATABASE_PROVIDER=supabase")
+            if self.database_create_if_missing:
+                raise ValueError(
+                    "DATABASE_CREATE_IF_MISSING must be false for DATABASE_PROVIDER=supabase"
+                )
+            if self.database_ssl_mode not in {"require", "verify-ca", "verify-full"}:
+                raise ValueError(
+                    "DATABASE_SSL_MODE must require TLS for DATABASE_PROVIDER=supabase"
+                )
 
 
 def load_settings(
