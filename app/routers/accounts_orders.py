@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from models import (
     AccountBalance,
@@ -20,8 +20,12 @@ from models import (
 )
 
 
+IN_FLIGHT_ORDER_STATUSES = {"pending", "placed", "partially_filled"}
+
+
 ROUTE_SIGNATURES = frozenset(
     {
+        ("/orders", "GET"),
         ("/orders/trade/{trade_id}", "GET"),
         ("/orders/{order_id}", "GET"),
         ("/orders/{order_id}", "PATCH"),
@@ -39,6 +43,65 @@ ROUTE_SIGNATURES = frozenset(
 
 def create_accounts_orders_router(runtime: Any) -> APIRouter:
     router = APIRouter(tags=["accounts-orders"])
+
+    @router.get(
+        "/orders",
+        response_model=StandardAgentResponse[List[Order]],
+    )
+    async def list_orders_compatibility_endpoint(
+        account_id: Union[int, str] = 1,
+        status: Optional[str] = None,
+        limit: int = Query(100, ge=1, le=1000),
+        api_key: str = Depends(runtime.get_api_key),
+        correlation_id: str = Depends(runtime.get_correlation_id),
+    ):
+        """Return account-scoped orders for Execution_Agent reconciliation.
+
+        Execution_Agent historically queried ``GET /orders?status=in_flight``.
+        Database_Agent's modular API moved order history under the account route,
+        which left that runtime contract unresolved. This compatibility endpoint
+        keeps the request account-scoped, defaults to the configured account 1
+        used by the hourly Paper workflow, and filters deterministically.
+        """
+
+        logging.info(
+            "Compatibility order lookup for account %s, status=%s, limit=%s.",
+            account_id,
+            status,
+            limit,
+        )
+        try:
+            orders = runtime.db.get_orders(account_id)
+        except Exception as exc:
+            logging.error(
+                "Compatibility order lookup failed for account %s: %s",
+                account_id,
+                exc,
+                exc_info=True,
+            )
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        normalized = [
+            runtime.normalize_order_protective_metadata(order)
+            for order in (orders or [])
+        ]
+        requested_status = str(status or "").strip().lower()
+        if requested_status == "in_flight":
+            normalized = [
+                order
+                for order in normalized
+                if str(order.get("status") or "").strip().lower()
+                in IN_FLIGHT_ORDER_STATUSES
+            ]
+        elif requested_status:
+            normalized = [
+                order
+                for order in normalized
+                if str(order.get("status") or "").strip().lower()
+                == requested_status
+            ]
+
+        return runtime.wrap_response(data=normalized[:limit])
 
     @router.get(
         "/orders/trade/{trade_id}",
@@ -254,7 +317,7 @@ def create_accounts_orders_router(runtime: Any) -> APIRouter:
         api_key: str = Depends(runtime.get_api_key),
         correlation_id: str = Depends(runtime.get_correlation_id),
     ):
-        logging.info("Request to get trades for account %s.", account_id)
+        logging.info("Request to get trades for account %s, symbol=%s.", account_id, None)
         try:
             trades = runtime.db.get_trade_history(account_id)
         except Exception as exc:
