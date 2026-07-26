@@ -19,7 +19,7 @@ def _order(order_id: int, status: str, *, account_id: int = 1):
         "price": "100.00",
         "quantity": 1,
         "time_in_force": "GTC",
-        "strategy_bucket": "quality_growth",
+        "strategy_bucket": "value_rebound",
         "status": status,
         "executed_quantity": 0,
         "metadata": {},
