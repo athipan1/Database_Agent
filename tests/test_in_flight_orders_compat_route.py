@@ -8,7 +8,13 @@ from fastapi.testclient import TestClient
 from app.routers.accounts_orders import create_accounts_orders_router
 
 
-def _order(order_id: int, status: str, *, account_id: int = 1):
+def _order(
+    order_id: int,
+    status: str,
+    *,
+    account_id: int = 1,
+    strategy_bucket: str = "value_rebound",
+):
     return {
         "order_id": order_id,
         "trade_id": f"trade-{order_id}",
@@ -19,7 +25,7 @@ def _order(order_id: int, status: str, *, account_id: int = 1):
         "price": "100.00",
         "quantity": 1,
         "time_in_force": "GTC",
-        "strategy_bucket": "value_rebound",
+        "strategy_bucket": strategy_bucket,
         "status": status,
         "executed_quantity": 0,
         "metadata": {},
@@ -59,7 +65,7 @@ def _runtime(rows):
 def test_global_orders_compatibility_route_filters_in_flight_for_account_one():
     runtime = _runtime(
         [
-            _order(1, "pending"),
+            _order(1, "pending", strategy_bucket="quality_growth"),
             _order(2, "placed"),
             _order(3, "partially_filled"),
             _order(4, "executed"),
@@ -76,6 +82,7 @@ def test_global_orders_compatibility_route_filters_in_flight_for_account_one():
 
     assert response.status_code == 200
     assert [row["order_id"] for row in response.json()["data"]] == [1, 2]
+    assert response.json()["data"][0]["strategy_bucket"] == "quality_growth"
     runtime.db.get_orders.assert_called_once_with(1)
 
 
