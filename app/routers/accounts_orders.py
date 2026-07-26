@@ -46,7 +46,7 @@ def create_accounts_orders_router(runtime: Any) -> APIRouter:
 
     @router.get(
         "/orders",
-        response_model=StandardAgentResponse[List[Order]],
+        response_model=StandardAgentResponse[List[Dict[str, Any]]],
     )
     async def list_orders_compatibility_endpoint(
         account_id: Union[int, str] = 1,
@@ -62,6 +62,11 @@ def create_accounts_orders_router(runtime: Any) -> APIRouter:
         which left that runtime contract unresolved. This compatibility endpoint
         keeps the request account-scoped, defaults to the configured account 1
         used by the hourly Paper workflow, and filters deterministically.
+
+        The compatibility response deliberately preserves order dictionaries
+        instead of narrowing them through Database_Agent's legacy ``Order`` model.
+        Execution_Agent owns the broader strategy-bucket contract, including
+        ``quality_growth``, and validates each returned row before reconciliation.
         """
 
         logging.info(
@@ -317,7 +322,7 @@ def create_accounts_orders_router(runtime: Any) -> APIRouter:
         api_key: str = Depends(runtime.get_api_key),
         correlation_id: str = Depends(runtime.get_correlation_id),
     ):
-        logging.info("Request to get trades for account %s, symbol=%s.", account_id, None)
+        logging.info("Request to get trades for account %s.", account_id)
         try:
             trades = runtime.db.get_trade_history(account_id)
         except Exception as exc:
