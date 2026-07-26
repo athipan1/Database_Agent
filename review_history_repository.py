@@ -69,9 +69,19 @@ def setup_review_history_tables(db) -> None:
                 );
             """)
             if db.db_type == "postgres":
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_review_runs_account_bucket ON review_runs(account_id, bucket)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_review_decisions_run ON review_decisions(review_run_id)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_review_decisions_symbol ON review_decisions(symbol)")
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_review_runs_account_bucket "
+                    "ON review_runs(account_id, bucket)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_review_decisions_run "
+                    "ON review_decisions(review_run_id)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_review_decisions_symbol "
+                    "ON review_decisions(symbol)"
+                )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -84,7 +94,9 @@ def _final_decision(row: Dict[str, Any]) -> str:
     plan = row.get("profit_plan") or {}
     action = str(plan.get("primary_action") or "hold").lower()
     risk_status = str(row.get("risk_status") or "not_submitted").lower()
-    preview_status = str(row.get("execution_preview_status") or "not_submitted").lower()
+    preview_status = str(
+        row.get("execution_preview_status") or "not_submitted"
+    ).lower()
     if risk_status != "approved":
         return "BLOCKED_BY_RISK"
     if preview_status == "blocked":
@@ -142,7 +154,9 @@ def _format_decision(row: Any) -> Optional[Dict[str, Any]]:
         "preview_status": _row_get(row, "preview_status", 7),
         "final_decision": _row_get(row, "final_decision", 8),
         "reason": _row_get(row, "reason", 9),
-        "position_snapshot": _loads(_row_get(row, "position_snapshot", 10), {}),
+        "position_snapshot": _loads(
+            _row_get(row, "position_snapshot", 10), {}
+        ),
         "profit_plan": _loads(_row_get(row, "profit_plan", 11), {}),
         "risk_result": _loads(_row_get(row, "risk_result", 12), {}),
         "preview_result": _loads(_row_get(row, "preview_result", 13), {}),
@@ -151,98 +165,184 @@ def _format_decision(row: Any) -> Optional[Dict[str, Any]]:
     }
 
 
-def create_review_history(db, body: Dict[str, Any], correlation_id: Optional[str] = None) -> Dict[str, Any]:
+def create_review_history(
+    db,
+    body: Dict[str, Any],
+    correlation_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create or replace one deterministic review run atomically.
+
+    Hourly portfolio cycle IDs are deterministic for an account and UTC hour.
+    GitHub retries and manual reruns therefore legitimately submit the same
+    ``review_run_id`` more than once. Treating that identity as create-only made
+    retries fail with ``review_runs_pkey`` violations. The run is now upserted,
+    and its child decisions are replaced in the same transaction.
+    """
+
     setup_review_history_tables(db)
     report = body.get("report") or {}
     account_id = str(body.get("account_id") or report.get("account_id") or "1")
     bucket = body.get("bucket") or report.get("bucket") or "unassigned"
-    review_run_id = body.get("review_run_id") or f"review-{bucket}-{uuid.uuid4().hex[:12]}"
+    review_run_id = (
+        body.get("review_run_id")
+        or f"review-{bucket}-{uuid.uuid4().hex[:12]}"
+    )
     rows = report.get("reviewed_positions") or []
     now = _now_iso()
 
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
         try:
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 INSERT INTO review_runs
-                    (review_run_id, account_id, bucket, mode, source, status, generated_at,
-                     correlation_id, summary, safety, raw_report, updated_at)
-                VALUES ({db.param_style}, {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style},
-                        {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style},
-                        {db.param_style}, {db.param_style})
-            """, (
-                review_run_id,
-                account_id,
-                str(bucket),
-                str(report.get("mode") or "review_report"),
-                str(body.get("source") or "manager-agent"),
-                str(body.get("status") or "completed"),
-                report.get("generated_at"),
-                correlation_id,
-                json.dumps(report.get("summary") or {}),
-                json.dumps(report.get("safety") or {}),
-                json.dumps(report),
-                now,
-            ))
-            for row in rows:
-                plan = row.get("profit_plan") or {}
-                cursor.execute(f"""
-                    INSERT INTO review_decisions
-                        (decision_id, review_run_id, account_id, bucket, symbol, profit_action,
-                         risk_status, preview_status, final_decision, reason, position_snapshot,
-                         profit_plan, risk_result, preview_result, metadata)
-                    VALUES ({db.param_style}, {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style},
-                            {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style},
-                            {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style}, {db.param_style})
-                """, (
-                    f"decision-{uuid.uuid4().hex}",
+                    (review_run_id, account_id, bucket, mode, source, status,
+                     generated_at, correlation_id, summary, safety, raw_report,
+                     updated_at)
+                VALUES ({db.param_style}, {db.param_style}, {db.param_style},
+                        {db.param_style}, {db.param_style}, {db.param_style},
+                        {db.param_style}, {db.param_style}, {db.param_style},
+                        {db.param_style}, {db.param_style}, {db.param_style})
+                ON CONFLICT (review_run_id) DO UPDATE SET
+                    account_id = EXCLUDED.account_id,
+                    bucket = EXCLUDED.bucket,
+                    mode = EXCLUDED.mode,
+                    source = EXCLUDED.source,
+                    status = EXCLUDED.status,
+                    generated_at = EXCLUDED.generated_at,
+                    correlation_id = EXCLUDED.correlation_id,
+                    summary = EXCLUDED.summary,
+                    safety = EXCLUDED.safety,
+                    raw_report = EXCLUDED.raw_report,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                (
                     review_run_id,
                     account_id,
-                    str(row.get("bucket") or bucket),
-                    str(row.get("symbol") or "").upper(),
-                    plan.get("primary_action"),
-                    row.get("risk_status"),
-                    row.get("execution_preview_status"),
-                    _final_decision(row),
-                    _reason(row),
-                    json.dumps({
-                        "quantity": row.get("quantity"),
-                        "entry_price": row.get("entry_price"),
-                        "current_price": row.get("current_price"),
-                        "stop_loss": row.get("stop_loss"),
-                        "has_protective_stop": row.get("has_protective_stop"),
-                    }),
-                    json.dumps(plan),
-                    json.dumps(row.get("risk_result") or {}),
-                    json.dumps(row.get("execution_preview_result") or {}),
-                    json.dumps({"bucket_source": row.get("bucket_source"), "profit_source": row.get("profit_source")}),
-                ))
+                    str(bucket),
+                    str(report.get("mode") or "review_report"),
+                    str(body.get("source") or "manager-agent"),
+                    str(body.get("status") or "completed"),
+                    report.get("generated_at"),
+                    correlation_id,
+                    json.dumps(report.get("summary") or {}),
+                    json.dumps(report.get("safety") or {}),
+                    json.dumps(report),
+                    now,
+                ),
+            )
+
+            # The upsert above serializes concurrent writers on the run row in
+            # PostgreSQL. Replacing children after that lock gives retries a
+            # complete last-write-wins snapshot instead of accumulating copies.
+            cursor.execute(
+                f"DELETE FROM review_decisions "
+                f"WHERE review_run_id = {db.param_style}",
+                (review_run_id,),
+            )
+
+            for row in rows:
+                plan = row.get("profit_plan") or {}
+                cursor.execute(
+                    f"""
+                    INSERT INTO review_decisions
+                        (decision_id, review_run_id, account_id, bucket, symbol,
+                         profit_action, risk_status, preview_status,
+                         final_decision, reason, position_snapshot, profit_plan,
+                         risk_result, preview_result, metadata)
+                    VALUES ({db.param_style}, {db.param_style}, {db.param_style},
+                            {db.param_style}, {db.param_style}, {db.param_style},
+                            {db.param_style}, {db.param_style}, {db.param_style},
+                            {db.param_style}, {db.param_style}, {db.param_style},
+                            {db.param_style}, {db.param_style}, {db.param_style})
+                    """,
+                    (
+                        f"decision-{uuid.uuid4().hex}",
+                        review_run_id,
+                        account_id,
+                        str(row.get("bucket") or bucket),
+                        str(row.get("symbol") or "").upper(),
+                        plan.get("primary_action"),
+                        row.get("risk_status"),
+                        row.get("execution_preview_status"),
+                        _final_decision(row),
+                        _reason(row),
+                        json.dumps(
+                            {
+                                "quantity": row.get("quantity"),
+                                "entry_price": row.get("entry_price"),
+                                "current_price": row.get("current_price"),
+                                "stop_loss": row.get("stop_loss"),
+                                "has_protective_stop": row.get(
+                                    "has_protective_stop"
+                                ),
+                            }
+                        ),
+                        json.dumps(plan),
+                        json.dumps(row.get("risk_result") or {}),
+                        json.dumps(
+                            row.get("execution_preview_result") or {}
+                        ),
+                        json.dumps(
+                            {
+                                "bucket_source": row.get("bucket_source"),
+                                "profit_source": row.get("profit_source"),
+                            }
+                        ),
+                    ),
+                )
             conn.commit()
         except Exception:
             conn.rollback()
             raise
         finally:
             cursor.close()
-    return get_review_history(db, review_run_id) or {"review_run_id": review_run_id, "decisions": []}
+    return get_review_history(db, review_run_id) or {
+        "review_run_id": review_run_id,
+        "decisions": [],
+    }
 
 
-def get_review_history(db, review_run_id: str) -> Optional[Dict[str, Any]]:
+def get_review_history(
+    db,
+    review_run_id: str,
+) -> Optional[Dict[str, Any]]:
     setup_review_history_tables(db)
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
         try:
-            cursor.execute(f"SELECT * FROM review_runs WHERE review_run_id = {db.param_style}", (review_run_id,))
+            cursor.execute(
+                f"SELECT * FROM review_runs "
+                f"WHERE review_run_id = {db.param_style}",
+                (review_run_id,),
+            )
             record = _format_run(cursor.fetchone())
             if not record:
                 return None
-            cursor.execute(f"SELECT * FROM review_decisions WHERE review_run_id = {db.param_style} ORDER BY symbol ASC", (review_run_id,))
-            record["decisions"] = [item for item in (_format_decision(row) for row in cursor.fetchall()) if item]
+            cursor.execute(
+                f"SELECT * FROM review_decisions "
+                f"WHERE review_run_id = {db.param_style} "
+                "ORDER BY symbol ASC",
+                (review_run_id,),
+            )
+            record["decisions"] = [
+                item
+                for item in (
+                    _format_decision(row) for row in cursor.fetchall()
+                )
+                if item
+            ]
             return record
         finally:
             cursor.close()
 
 
-def list_review_history(db, account_id: Optional[str] = None, bucket: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+def list_review_history(
+    db,
+    account_id: Optional[str] = None,
+    bucket: Optional[str] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
     setup_review_history_tables(db)
     where = []
     params: List[Any] = []
@@ -257,13 +357,26 @@ def list_review_history(db, account_id: Optional[str] = None, bucket: Optional[s
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
         try:
-            cursor.execute(f"SELECT * FROM review_runs{where_sql} ORDER BY created_at DESC LIMIT {db.param_style}", tuple(params))
-            return [item for item in (_format_run(row) for row in cursor.fetchall()) if item]
+            cursor.execute(
+                f"SELECT * FROM review_runs{where_sql} "
+                f"ORDER BY created_at DESC LIMIT {db.param_style}",
+                tuple(params),
+            )
+            return [
+                item
+                for item in (
+                    _format_run(row) for row in cursor.fetchall()
+                )
+                if item
+            ]
         finally:
             cursor.close()
 
 
-def _count_by(decisions: List[Dict[str, Any]], field: str) -> Dict[str, int]:
+def _count_by(
+    decisions: List[Dict[str, Any]],
+    field: str,
+) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     for decision in decisions:
         value = decision.get(field) or "unknown"
@@ -271,7 +384,9 @@ def _count_by(decisions: List[Dict[str, Any]], field: str) -> Dict[str, int]:
     return counts
 
 
-def build_review_history_summary(record: Dict[str, Any]) -> Dict[str, Any]:
+def build_review_history_summary(
+    record: Dict[str, Any],
+) -> Dict[str, Any]:
     decisions = record.get("decisions") or []
     summary = record.get("summary") or {}
     safety = record.get("safety") or {}
@@ -297,16 +412,34 @@ def build_review_history_summary(record: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": record.get("created_at"),
         "updated_at": record.get("updated_at"),
         "positions_seen": summary.get("positions_seen", 0),
-        "reviewed_positions": summary.get("reviewed_positions", len(decisions)),
-        "database_bucket_hints_applied": summary.get("database_bucket_hints_applied", 0),
+        "reviewed_positions": summary.get(
+            "reviewed_positions",
+            len(decisions),
+        ),
+        "database_bucket_hints_applied": summary.get(
+            "database_bucket_hints_applied",
+            0,
+        ),
         "profit_agent_used": summary.get("profit_agent_used", 0),
         "risk_submissions": summary.get("risk_submissions", 0),
         "risk_approved": summary.get("risk_approved", 0),
         "risk_rejected": summary.get("risk_rejected", 0),
-        "execution_preview_submissions": summary.get("execution_preview_submissions", 0),
-        "execution_preview_ready": summary.get("execution_preview_ready", 0),
-        "execution_preview_blocked": summary.get("execution_preview_blocked", 0),
-        "execution_submissions": summary.get("execution_submissions", 0),
+        "execution_preview_submissions": summary.get(
+            "execution_preview_submissions",
+            0,
+        ),
+        "execution_preview_ready": summary.get(
+            "execution_preview_ready",
+            0,
+        ),
+        "execution_preview_blocked": summary.get(
+            "execution_preview_blocked",
+            0,
+        ),
+        "execution_submissions": summary.get(
+            "execution_submissions",
+            0,
+        ),
         "orders_submitted": bool(safety.get("orders_submitted", False)),
         "advisory_only": bool(safety.get("advisory_only", True)),
         "final_decisions": _count_by(decisions, "final_decision"),
@@ -317,8 +450,17 @@ def build_review_history_summary(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def get_latest_review_history_summary(db, account_id: Optional[str] = None, bucket: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    latest = list_review_history(db, account_id=account_id, bucket=bucket, limit=1)
+def get_latest_review_history_summary(
+    db,
+    account_id: Optional[str] = None,
+    bucket: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    latest = list_review_history(
+        db,
+        account_id=account_id,
+        bucket=bucket,
+        limit=1,
+    )
     if not latest:
         return None
     review_run_id = latest[0].get("review_run_id")
