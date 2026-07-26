@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 from review_history_repository import (
     build_review_history_summary,
     create_review_history,
@@ -19,6 +21,8 @@ class FakeCursor:
         self.statements.append((sql, params))
         normalized = " ".join(sql.lower().split())
         if normalized.startswith("insert into review_runs"):
+            if params[0] in self.runs and "on conflict" not in normalized:
+                raise RuntimeError("duplicate review_run_id")
             self.runs[params[0]] = {
                 "review_run_id": params[0],
                 "account_id": params[1],
@@ -34,36 +38,54 @@ class FakeCursor:
                 "created_at": "now",
                 "updated_at": params[11],
             }
+        elif normalized.startswith("delete from review_decisions"):
+            self.decisions = [
+                row
+                for row in self.decisions
+                if row["review_run_id"] != params[0]
+            ]
         elif normalized.startswith("insert into review_decisions"):
-            self.decisions.append({
-                "decision_id": params[0],
-                "review_run_id": params[1],
-                "account_id": params[2],
-                "bucket": params[3],
-                "symbol": params[4],
-                "profit_action": params[5],
-                "risk_status": params[6],
-                "preview_status": params[7],
-                "final_decision": params[8],
-                "reason": params[9],
-                "position_snapshot": params[10],
-                "profit_plan": params[11],
-                "risk_result": params[12],
-                "preview_result": params[13],
-                "metadata": params[14],
-                "created_at": "now",
-            })
+            self.decisions.append(
+                {
+                    "decision_id": params[0],
+                    "review_run_id": params[1],
+                    "account_id": params[2],
+                    "bucket": params[3],
+                    "symbol": params[4],
+                    "profit_action": params[5],
+                    "risk_status": params[6],
+                    "preview_status": params[7],
+                    "final_decision": params[8],
+                    "reason": params[9],
+                    "position_snapshot": params[10],
+                    "profit_plan": params[11],
+                    "risk_result": params[12],
+                    "preview_result": params[13],
+                    "metadata": params[14],
+                    "created_at": "now",
+                }
+            )
         elif "from review_runs where review_run_id" in normalized:
             self.last_result = self.runs.get(params[0])
         elif "from review_decisions where review_run_id" in normalized:
-            self.last_results = [row for row in self.decisions if row["review_run_id"] == params[0]]
+            self.last_results = [
+                row
+                for row in self.decisions
+                if row["review_run_id"] == params[0]
+            ]
         elif normalized.startswith("select * from review_runs"):
             results = list(self.runs.values())
             if "where" in normalized:
                 filters = list(params[:-1])
                 for value in filters:
-                    results = [row for row in results if value in (row["account_id"], row["bucket"])]
-            self.last_results = results[: int(params[-1])] if params else results
+                    results = [
+                        row
+                        for row in results
+                        if value in (row["account_id"], row["bucket"])
+                    ]
+            self.last_results = (
+                results[: int(params[-1])] if params else results
+            )
 
     def fetchone(self):
         return self.last_result
@@ -144,19 +166,33 @@ def sample_report():
                 "profit_source": "profit_agent",
                 "profit_plan": {
                     "primary_action": "hold",
-                    "actions": [{"reason": "No take-profit or exit condition is triggered"}],
+                    "actions": [
+                        {
+                            "reason": (
+                                "No take-profit or exit condition is triggered"
+                            )
+                        }
+                    ],
                 },
                 "risk_status": "approved",
                 "risk_result": {"approved": True},
                 "execution_preview_status": "ready",
-                "execution_preview_result": {"approved_for_execution": True},
+                "execution_preview_result": {
+                    "approved_for_execution": True
+                },
             },
             {
                 "symbol": "CINF",
                 "bucket": "value_rebound",
                 "profit_plan": {
                     "primary_action": "hold",
-                    "actions": [{"reason": "No take-profit or exit condition is triggered"}],
+                    "actions": [
+                        {
+                            "reason": (
+                                "No take-profit or exit condition is triggered"
+                            )
+                        }
+                    ],
                 },
                 "risk_status": "approved",
                 "execution_preview_status": "ready",
@@ -184,9 +220,59 @@ def test_create_review_history_persists_run_and_decisions():
     assert record["decisions"][0]["final_decision"] == "HOLD"
 
 
+def test_create_review_history_replaces_same_deterministic_run_id():
+    db = FakeDB()
+    create_review_history(
+        db,
+        {
+            "account_id": 1,
+            "review_run_id": "hourly-paper-account-20260726T16",
+            "status": "reviewed",
+            "report": sample_report(),
+        },
+        correlation_id="hourly-paper-account-20260726T16",
+    )
+
+    retried_report = deepcopy(sample_report())
+    retried_report["summary"]["reviewed_positions"] = 1
+    retried_report["reviewed_positions"] = retried_report[
+        "reviewed_positions"
+    ][:1]
+    record = create_review_history(
+        db,
+        {
+            "account_id": 1,
+            "review_run_id": "hourly-paper-account-20260726T16",
+            "status": "reviewed_after_retry",
+            "report": retried_report,
+        },
+        correlation_id="hourly-paper-account-20260726T16",
+    )
+
+    assert record["status"] == "reviewed_after_retry"
+    assert record["raw_report"]["summary"]["reviewed_positions"] == 1
+    assert len(record["decisions"]) == 1
+    assert record["decisions"][0]["symbol"] == "ACGL"
+
+    normalized_statements = [
+        " ".join(sql.lower().split()) for sql, _ in db.cursor.statements
+    ]
+    assert any(
+        "on conflict (review_run_id) do update" in sql
+        for sql in normalized_statements
+    )
+    assert any(
+        sql.startswith("delete from review_decisions")
+        for sql in normalized_statements
+    )
+
+
 def test_get_and_list_review_history():
     db = FakeDB()
-    create_review_history(db, {"review_run_id": "review-test-1", "report": sample_report()})
+    create_review_history(
+        db,
+        {"review_run_id": "review-test-1", "report": sample_report()},
+    )
     fetched = get_review_history(db, "review-test-1")
     listed = list_review_history(db, bucket="value_rebound")
 
@@ -196,10 +282,16 @@ def test_get_and_list_review_history():
 
 def test_build_review_history_summary_compacts_decisions():
     db = FakeDB()
-    record = create_review_history(db, {"review_run_id": "review-test-1", "account_id": 1, "report": sample_report()})
+    record = create_review_history(
+        db,
+        {
+            "review_run_id": "review-test-1",
+            "account_id": 1,
+            "report": sample_report(),
+        },
+    )
 
     summary = build_review_history_summary(record)
-
     assert summary["latest_review_run_id"] == "review-test-1"
     assert summary["reviewed_positions"] == 2
     assert summary["orders_submitted"] is False
@@ -212,9 +304,21 @@ def test_build_review_history_summary_compacts_decisions():
 
 def test_get_latest_review_history_summary():
     db = FakeDB()
-    create_review_history(db, {"review_run_id": "review-test-1", "account_id": 1, "bucket": "value_rebound", "report": sample_report()})
+    create_review_history(
+        db,
+        {
+            "review_run_id": "review-test-1",
+            "account_id": 1,
+            "bucket": "value_rebound",
+            "report": sample_report(),
+        },
+    )
 
-    summary = get_latest_review_history_summary(db, account_id="1", bucket="value_rebound")
+    summary = get_latest_review_history_summary(
+        db,
+        account_id="1",
+        bucket="value_rebound",
+    )
 
     assert summary["latest_review_run_id"] == "review-test-1"
     assert summary["bucket"] == "value_rebound"
