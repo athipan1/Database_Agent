@@ -19,9 +19,16 @@ class OrderType(str, Enum):
 
 
 class TimeInForce(str, Enum):
+    DAY = "DAY"  # Valid for regular-session broker orders
     GTC = "GTC"  # Good 'til Canceled
     IOC = "IOC"  # Immediate or Cancel
     FOK = "FOK"  # Fill or Kill
+
+    @classmethod
+    def _missing_(cls, value):
+        """Accept broker/database TIF values case-insensitively."""
+        normalized = str(value or "").strip().upper()
+        return cls.__members__.get(normalized)
 
 
 class OrderStatus(str, Enum):
