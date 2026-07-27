@@ -234,6 +234,14 @@ def update_plan_record_status(db, trade_plan_id: str, body: UpdateTradePlanStatu
             current = _format_row(cursor.fetchone())
             if not current:
                 raise HTTPException(status_code=404, detail=f"TradePlan {trade_plan_id} not found")
+            if body.expected_status is not None and current.status != body.expected_status:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"TradePlan {trade_plan_id} status conflict: expected "
+                        f"{_status_value(body.expected_status)}, found {_status_value(current.status)}"
+                    ),
+                )
             metadata = {**(current.metadata or {}), **(body.metadata or {})}
             lifecycle = list(current.lifecycle or [])
             lifecycle.append(_event(body.status, reason=body.reason, metadata=body.metadata))
