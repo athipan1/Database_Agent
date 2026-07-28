@@ -11,6 +11,7 @@ class TradePlanLifecycleStatus(str, Enum):
     CREATED = "created"
     RISK_PENDING = "risk_pending"
     RISK_APPROVED = "risk_approved"
+    EXECUTION_PENDING = "execution_pending"
     EXECUTION_SUBMITTED = "execution_submitted"
     QUEUED = "queued"
     PLACED = "placed"
@@ -66,6 +67,7 @@ class CreateTradePlanBody(TradePlanBaseModel):
 
 class UpdateTradePlanStatusBody(TradePlanBaseModel):
     status: TradePlanLifecycleStatus
+    expected_status: Optional[TradePlanLifecycleStatus] = None
     reason: Optional[str] = None
     risk_approval_id: Optional[str] = None
     order_id: Optional[int] = None
