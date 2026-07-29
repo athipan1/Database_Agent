@@ -4,7 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from order_creation_persistence import install_strategy_bucket_order_creation
+from order_creation_persistence import (
+    _legacy_client_order_id,
+    install_strategy_bucket_order_creation,
+)
 
 
 class SQLiteOrderDB:
@@ -186,3 +189,19 @@ def test_installer_is_idempotent():
 
     assert runtime.db.create_order == first_create_order
     assert runtime._order_body_to_create_args == first_mapper
+
+
+def test_postgres_legacy_client_order_id_ignores_opaque_trade_id():
+    trade_id = "profit:account-102:position-2:HARD:v1:hard-stop"
+
+    assert _legacy_client_order_id("postgres", trade_id) is None
+    assert _legacy_client_order_id("sqlite", trade_id) == trade_id
+
+
+def test_postgres_legacy_client_order_id_preserves_uuid():
+    trade_id = "9FD5E882-C2F8-41F7-AE7A-337318A50CEB"
+
+    assert (
+        _legacy_client_order_id("postgres", trade_id)
+        == "9fd5e882-c2f8-41f7-ae7a-337318a50ceb"
+    )
