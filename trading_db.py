@@ -569,7 +569,8 @@ class TradingDB:
                 # Security: Whitelist allowed columns to prevent SQL injection or arbitrary updates
                 ALLOWED_COLUMNS = {
                     'status', 'broker_order_id', 'reason', 'executed_quantity',
-                    'avg_execution_price', 'executed_at', 'failure_reason', 'correlation_id'
+                    'avg_execution_price', 'executed_at', 'failure_reason',
+                    'correlation_id', 'metadata'
                 }
 
                 set_clauses = []
@@ -580,7 +581,11 @@ class TradingDB:
                         continue
 
                     set_clauses.append(f"{key} = {self.param_style}")
-                    if isinstance(value, Decimal):
+                    if key == 'metadata':
+                        if value is not None and not isinstance(value, dict):
+                            raise ValueError("metadata update must be a JSON object or null")
+                        params.append(json.dumps(value) if value is not None else None)
+                    elif isinstance(value, Decimal):
                         params.append(str(value))
                     else:
                         params.append(value)
