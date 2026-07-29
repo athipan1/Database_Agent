@@ -274,6 +274,7 @@ def create_accounts_orders_router(runtime: Any) -> APIRouter:
                     final_quantity=body.final_quantity,
                     guard_plan=body.guard_plan,
                     protective_exit=body.protective_exit,
+                    metadata=body.metadata,
                 )
             order = (
                 runtime.db.get_order_by_id(order_id)

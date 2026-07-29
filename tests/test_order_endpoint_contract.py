@@ -25,6 +25,13 @@ def test_create_order_endpoint_maps_body_to_trading_db_contract():
         "time_in_force": "GTC",
         "risk_approval_id": "risk-approval-1",
         "final_quantity": 3,
+        "metadata": {
+            "profit_decision_id": "profit:account-1:position-2:HARD:v1:hard-stop",
+            "position_id": "position-2",
+            "position_version": 1,
+            "correlation_id": "corr-api-contract",
+            "advisory_source": "profit-agent",
+        },
         "guard_plan": {
             "symbol": "AAPL",
             "side": "sell",
@@ -35,6 +42,10 @@ def test_create_order_endpoint_maps_body_to_trading_db_contract():
     }
     expected_guard_plan = {
         **payload["guard_plan"],
+        "strategy_bucket": "unassigned",
+    }
+    expected_metadata = {
+        **payload["metadata"],
         "strategy_bucket": "unassigned",
     }
     persisted_order = {
@@ -54,6 +65,7 @@ def test_create_order_endpoint_maps_body_to_trading_db_contract():
         "final_quantity": 3,
         "guard_plan": expected_guard_plan,
         "protective_exit": None,
+        "metadata": expected_metadata,
     }
 
     with patch.object(main, "DATABASE_AGENT_API_KEY", "test-key"), \
@@ -77,6 +89,7 @@ def test_create_order_endpoint_maps_body_to_trading_db_contract():
     assert body["data"]["risk_approval_id"] == "risk-approval-1"
     assert body["data"]["final_quantity"] == 3
     assert body["data"]["guard_plan"] == expected_guard_plan
+    assert body["data"]["metadata"] == expected_metadata
 
     setup_columns.assert_called_once_with(main.db)
     create_order.assert_called_once_with(
@@ -97,6 +110,7 @@ def test_create_order_endpoint_maps_body_to_trading_db_contract():
         final_quantity=3,
         guard_plan=expected_guard_plan,
         protective_exit=None,
+        metadata=expected_metadata,
     )
 
 
@@ -169,4 +183,5 @@ def test_create_order_endpoint_preserves_strategy_bucket_for_value_rebound_order
         final_quantity=5,
         guard_plan=expected_guard_plan,
         protective_exit=None,
+        metadata={"strategy_bucket": "value_rebound"},
     )
