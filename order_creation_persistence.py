@@ -17,6 +17,7 @@ from __future__ import annotations
 import sqlite3
 from types import MethodType
 from typing import Any, Optional
+from uuid import UUID
 
 from protective_order_repository import ALLOWED_STRATEGY_BUCKETS
 
@@ -35,6 +36,16 @@ def _normalize_strategy_bucket(value: Any) -> str:
 
 def _is_unique_violation(exc: Exception) -> bool:
     return isinstance(exc, sqlite3.IntegrityError) or exc.__class__.__name__ == "UniqueViolation"
+
+
+def _legacy_client_order_id(db_type: str, trade_id: str) -> Optional[str]:
+    """Preserve the legacy UUID column without rejecting opaque trade IDs."""
+    if db_type != "postgres":
+        return trade_id
+    try:
+        return str(UUID(trade_id))
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def _existing_order_after_duplicate(db, trade_id: str, requested_bucket: str) -> Optional[int]:
@@ -125,7 +136,7 @@ def _create_order_with_strategy_bucket(
                 time_in_force,
                 normalized_bucket,
                 correlation_id,
-                normalized_trade_id,
+                _legacy_client_order_id(self.db_type, normalized_trade_id),
             )
             cursor.execute(query, params)
             cursor.execute(
