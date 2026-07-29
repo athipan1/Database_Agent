@@ -16,6 +16,10 @@ os.environ.setdefault("POSTGRES_PORT", "5432")
 
 # This import must come after setting the environment variables
 from trading_db import TradingDB
+from protective_order_repository import (
+    normalize_order_protective_metadata,
+    setup_protective_order_columns,
+)
 
 @pytest.fixture(scope="function")
 def db_session():
@@ -223,6 +227,54 @@ def test_idempotency_of_order_creation(db_session: TradingDB):
     order_history = db_session.get_order_history(ACCOUNT_ID)
     assert len(order_history) == 1
     assert order_history[0]['order_id'] == order_id_1
+
+
+def test_order_metadata_update_round_trips_json_object(db_session: TradingDB):
+    setup_protective_order_columns(db_session)
+    trade_id = str(uuid4())
+    order_id = db_session.create_order(
+        account_id=1,
+        trade_id=trade_id,
+        symbol="AAPL",
+        side="SELL",
+        order_type="market",
+        quantity=1,
+        price=Decimal("150.00"),
+        correlation_id="profit-metadata-round-trip",
+    )
+    metadata = {
+        "profit_decision_id": "profit:account-1:position-1:AAPL:v1:tp1",
+        "position_id": "account-1:position-1",
+        "position_version": 1,
+        "correlation_id": "profit-metadata-round-trip",
+        "advisory_source": "profit-agent",
+    }
+
+    updated = db_session.update_order(order_id, {"metadata": metadata})
+    normalized = normalize_order_protective_metadata(updated)
+
+    assert normalized["metadata"] == metadata
+
+
+@pytest.mark.parametrize("invalid_metadata", ["not-json-object", ["list"]])
+def test_order_metadata_update_rejects_non_object(
+    db_session: TradingDB,
+    invalid_metadata,
+):
+    setup_protective_order_columns(db_session)
+    order_id = db_session.create_order(
+        account_id=1,
+        trade_id=str(uuid4()),
+        symbol="AAPL",
+        side="SELL",
+        order_type="market",
+        quantity=1,
+        price=Decimal("150.00"),
+        correlation_id="profit-metadata-invalid",
+    )
+
+    with pytest.raises(ValueError, match="JSON object"):
+        db_session.update_order(order_id, {"metadata": invalid_metadata})
 
 def test_get_executions(db_session: TradingDB):
     """Tests the retrieval of executed trades, ignoring non-executed ones."""
