@@ -13,6 +13,8 @@ from urllib.parse import urlparse
 from datetime import datetime, timezone
 from contextlib import contextmanager
 
+from order_identifiers import client_order_id_for_trade_id
+
 # Configure logging (handlers are added in main.py)
 logger = logging.getLogger(__name__)
 
@@ -519,7 +521,18 @@ class TradingDB:
                     INSERT INTO orders (account_id, trade_id, symbol, side, order_type, quantity, price, time_in_force, status, correlation_id, client_order_id)
                     VALUES ({self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, {self.param_style}, 'pending', {self.param_style}, {self.param_style})
                 """
-                params = (account_id, trade_id, symbol.upper(), side.lower(), order_type.lower(), quantity, str(price) if price is not None else None, time_in_force, correlation_id, trade_id)
+                params = (
+                    account_id,
+                    trade_id,
+                    symbol.upper(),
+                    side.lower(),
+                    order_type.lower(),
+                    quantity,
+                    str(price) if price is not None else None,
+                    time_in_force,
+                    correlation_id,
+                    client_order_id_for_trade_id(trade_id),
+                )
                 cursor.execute(query, params)
 
                 # Fetch last inserted ID

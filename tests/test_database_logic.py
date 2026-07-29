@@ -5,6 +5,8 @@ from decimal import Decimal
 from uuid import uuid4
 import psycopg2.errors
 
+from order_identifiers import client_order_id_for_trade_id
+
 # Set environment variables for testing.
 # These will be overridden by the CI environment if set there.
 os.environ.setdefault("POSTGRES_DB", "trading_db_test") # Use a separate test DB
@@ -223,6 +225,54 @@ def test_idempotency_of_order_creation(db_session: TradingDB):
     order_history = db_session.get_order_history(ACCOUNT_ID)
     assert len(order_history) == 1
     assert order_history[0]['order_id'] == order_id_1
+
+
+def test_string_trade_id_is_persisted_with_uuid_compatible_client_order_id(
+    db_session: TradingDB,
+):
+    """PostgreSQL accepts lifecycle IDs while preserving trade ID idempotency."""
+    account_id = 1
+    trade_id = "profit:account-1:position-2:HARD:v1:hard-stop"
+
+    order_id = db_session.create_order(
+        account_id=account_id,
+        trade_id=trade_id,
+        symbol="AAPL",
+        side="SELL",
+        order_type="market",
+        quantity=1,
+        price=Decimal("150.00"),
+        correlation_id="corr-profit-lifecycle",
+    )
+    duplicate_order_id = db_session.create_order(
+        account_id=account_id,
+        trade_id=trade_id,
+        symbol="AAPL",
+        side="SELL",
+        order_type="market",
+        quantity=1,
+        price=Decimal("150.00"),
+        correlation_id="corr-profit-lifecycle-retry",
+    )
+
+    with db_session.connection_scope() as conn:
+        cursor = db_session.get_cursor(conn)
+        try:
+            cursor.execute(
+                f"""
+                SELECT trade_id, client_order_id
+                FROM orders
+                WHERE order_id = {db_session.param_style}
+                """,
+                (order_id,),
+            )
+            persisted = cursor.fetchone()
+        finally:
+            cursor.close()
+
+    assert duplicate_order_id == order_id
+    assert persisted["trade_id"] == trade_id
+    assert str(persisted["client_order_id"]) == client_order_id_for_trade_id(trade_id)
 
 def test_get_executions(db_session: TradingDB):
     """Tests the retrieval of executed trades, ignoring non-executed ones."""

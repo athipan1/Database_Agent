@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import sqlite3
 from types import MethodType
-from typing import Any, Optional
+from typing import Any
 
+from order_identifiers import client_order_id_for_trade_id
 from protective_order_repository import ALLOWED_STRATEGY_BUCKETS
-
 
 _INSTALL_FLAG = "_strategy_bucket_order_creation_installed"
 _ORIGINAL_HELPER = "_strategy_bucket_original_order_body_to_create_args"
@@ -37,7 +37,11 @@ def _is_unique_violation(exc: Exception) -> bool:
     return isinstance(exc, sqlite3.IntegrityError) or exc.__class__.__name__ == "UniqueViolation"
 
 
-def _existing_order_after_duplicate(db, trade_id: str, requested_bucket: str) -> Optional[int]:
+def _existing_order_after_duplicate(
+    db,
+    trade_id: str,
+    requested_bucket: str,
+) -> int | None:
     """Return an idempotent existing order and fail closed on bucket conflicts."""
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
@@ -92,7 +96,7 @@ def _create_order_with_strategy_bucket(
     time_in_force: str = "GTC",
     correlation_id: str = "",
     strategy_bucket: str = "unassigned",
-) -> Optional[int]:
+) -> int | None:
     """Insert an order and its strategy bucket atomically."""
     normalized_bucket = _normalize_strategy_bucket(strategy_bucket)
     normalized_trade_id = str(trade_id)
@@ -125,7 +129,7 @@ def _create_order_with_strategy_bucket(
                 time_in_force,
                 normalized_bucket,
                 correlation_id,
-                normalized_trade_id,
+                client_order_id_for_trade_id(normalized_trade_id),
             )
             cursor.execute(query, params)
             cursor.execute(

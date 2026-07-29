@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from order_creation_persistence import install_strategy_bucket_order_creation
+from order_identifiers import client_order_id_for_trade_id
 
 
 class SQLiteOrderDB:
@@ -107,6 +108,7 @@ def test_strategy_bucket_is_written_in_initial_insert_for_any_symbol(symbol, buc
     assert row["strategy_bucket"] == bucket
     assert row["status"] == "pending"
     assert row["correlation_id"] == "corr-direct-insert"
+    assert row["client_order_id"] == client_order_id_for_trade_id(body.trade_id)
 
 
 def test_duplicate_trade_id_is_idempotent_for_same_bucket():
