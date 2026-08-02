@@ -231,7 +231,9 @@ def _trade_outcome_from_row(row: Any) -> SkillTradeOutcome:
 def create_skill_execution_log(db, body: CreateSkillExecutionLogBody) -> SkillExecutionLog:
     created_at = body.created_at or _utc_now()
     record = SkillExecutionLog(
-        **body.model_dump(exclude={"execution_log_id", "created_at"}),
+        **body.model_dump(
+            exclude={"execution_log_id", "created_at", "symbol"}
+        ),
         execution_log_id=body.execution_log_id or str(uuid.uuid4()),
         symbol=body.symbol.upper() if body.symbol else None,
         created_at=created_at,
@@ -323,7 +325,9 @@ def list_skill_execution_logs(
 def create_skill_trade_outcome(db, body: CreateSkillTradeOutcomeBody) -> SkillTradeOutcome:
     created_at = _utc_now()
     record = SkillTradeOutcome(
-        **body.model_dump(exclude={"outcome_id"}),
+        **body.model_dump(
+            exclude={"outcome_id", "symbol", "closed_at"}
+        ),
         outcome_id=body.outcome_id or str(uuid.uuid4()),
         symbol=body.symbol.upper(),
         closed_at=body.closed_at,
