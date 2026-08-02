@@ -8,11 +8,13 @@ from fastapi.security import APIKeyHeader
 
 from skill_performance_models import CreateSkillExecutionLogBody, CreateSkillTradeOutcomeBody
 from skill_performance_repository import (
-    create_skill_execution_log,
-    create_skill_trade_outcome,
     list_skill_execution_logs,
     rank_skill_performance,
     setup_skill_performance_tables,
+)
+from skill_performance_write_repository import (
+    create_skill_execution_log,
+    create_skill_trade_outcome,
 )
 
 
