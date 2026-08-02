@@ -59,6 +59,27 @@ def test_execution_log_persists_normalized_symbol_without_duplicate_kwargs() -> 
     assert persisted[0].symbol == "TEST"
 
 
+def test_execution_log_accepts_missing_optional_symbol() -> None:
+    db = _database()
+
+    record = create_skill_execution_log(
+        db,
+        CreateSkillExecutionLogBody(
+            account_id=1,
+            skill_id="portfolio-level-skill",
+            symbol=None,
+            signal="hold",
+            execution_status="success",
+        ),
+    )
+
+    assert record.execution_log_id
+    assert record.symbol is None
+    persisted = list_skill_execution_logs(db, skill_id="portfolio-level-skill")
+    assert len(persisted) == 1
+    assert persisted[0].symbol is None
+
+
 def test_trade_outcome_persists_normalized_symbol_and_closed_at_once() -> None:
     db = _database()
     execution = create_skill_execution_log(
