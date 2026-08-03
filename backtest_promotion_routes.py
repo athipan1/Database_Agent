@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hmac
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -32,6 +34,12 @@ from backtest_promotion_repository import (
 
 logger = logging.getLogger(__name__)
 SCHEMA_VERSION = "backtest-promotion.v1"
+PRIVILEGED_STATES = {
+    "APPROVED_FOR_PAPER",
+    "PAPER_OBSERVING",
+    "REVOKED",
+    "EXPIRED",
+}
 
 
 def _request_correlation_id(request: Request) -> Optional[str]:
@@ -157,6 +165,22 @@ def _internal_error_response(*, correlation_id: Optional[str]) -> JSONResponse:
     )
 
 
+def _require_privileged_credential(
+    requested_state: str,
+    supplied_credential: Optional[str],
+) -> None:
+    if requested_state not in PRIVILEGED_STATES:
+        return
+    expected = os.getenv("BACKTEST_PROMOTION_APPROVAL_TOKEN", "")
+    if not expected or not supplied_credential:
+        raise HTTPException(status_code=403, detail="privileged credential required")
+    if not hmac.compare_digest(
+        supplied_credential.encode("utf-8"),
+        expected.encode("utf-8"),
+    ):
+        raise HTTPException(status_code=403, detail="privileged credential invalid")
+
+
 def create_backtest_promotion_routes(
     db,
     get_api_key_dependency,
@@ -168,6 +192,10 @@ def create_backtest_promotion_routes(
         route_class=PromotionAPIRoute,
     )
     api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
+    approval_key_header = APIKeyHeader(
+        name="X-PROMOTION-APPROVAL-KEY",
+        auto_error=False,
+    )
 
     async def _api_key(api_key_header_value: str = Security(api_key_header)):
         return get_api_key_dependency(api_key_header_value)
@@ -201,7 +229,6 @@ def create_backtest_promotion_routes(
             },
         )
 
-    # Static path must be registered before /{promotion_id}.
     @router.get("/latest/exact", response_model=dict)
     async def get_latest_exact_promotion_endpoint(
         account_id: str = Query(..., min_length=1, max_length=128),
@@ -212,7 +239,11 @@ def create_backtest_promotion_routes(
         max_age_hours: Optional[int] = Query(default=None, ge=1, le=8760),
         validation_profile: Optional[str] = Query(default=None, max_length=128),
         engine_version: Optional[str] = Query(default=None, max_length=128),
-        dataset_fingerprint: Optional[str] = Query(default=None, min_length=32, max_length=128),
+        dataset_fingerprint: Optional[str] = Query(
+            default=None,
+            min_length=32,
+            max_length=128,
+        ),
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
@@ -291,7 +322,9 @@ def create_backtest_promotion_routes(
         body: TransitionBacktestPromotionBody,
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
+        approval_credential: Optional[str] = Security(approval_key_header),
     ):
+        _require_privileged_credential(body.next_state, approval_credential)
         try:
             promotion = transition_backtest_promotion(
                 db,
@@ -343,7 +376,9 @@ def create_backtest_promotion_routes(
         body: RevokeBacktestPromotionBody,
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
+        approval_credential: Optional[str] = Security(approval_key_header),
     ):
+        _require_privileged_credential("REVOKED", approval_credential)
         try:
             promotion = revoke_backtest_promotion(
                 db,
