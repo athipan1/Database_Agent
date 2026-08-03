@@ -515,6 +515,41 @@ def _validate_current_for_heartbeat(promotion, body: ObserveBacktestPromotionBod
         )
 
 
+def _validate_transition_or_replay(
+    promotion,
+    body: ObserveBacktestPromotionBody,
+    action: ObservationAction,
+) -> None:
+    if (
+        promotion.state == body.expected_state
+        and promotion.version == body.expected_version
+    ):
+        return
+    target_state: PromotionState
+    if action == "START_OBSERVING":
+        target_state = "PAPER_OBSERVING"
+    elif action == "EXPIRE":
+        target_state = "EXPIRED"
+    else:
+        target_state = "REVOKED"
+    if (
+        promotion.state == target_state
+        and promotion.version == body.expected_version + 1
+    ):
+        return
+    if promotion.state not in OBSERVABLE_STATES:
+        raise PromotionTerminalState(
+            f"promotion state {promotion.state} cannot be paper-observed"
+        )
+    raise StalePromotionVersion(
+        "paper observation expected state/version does not match current promotion",
+        metadata={
+            "current_state": promotion.state,
+            "current_version": promotion.version,
+        },
+    )
+
+
 def observe_backtest_promotion(
     db,
     promotion_id: str,
@@ -556,6 +591,7 @@ def observe_backtest_promotion(
             effective_correlation_id,
         )
 
+    _validate_transition_or_replay(promotion, body, action)
     if action == "REVOKE":
         updated = revoke_backtest_promotion(
             db,
