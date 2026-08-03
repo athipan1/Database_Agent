@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 
 import backtest_promotion_observation_service as service
 from backtest_promotion_base import (
+    PromotionDatabaseConflict,
     PromotionTerminalState,
     PromotionValidationFailed,
     StalePromotionVersion,
@@ -112,7 +114,15 @@ def body(**updates):
     return ObserveBacktestPromotionBody.model_validate(value)
 
 
-def update_promotion(db, promotion_id, *, state, version, correlation_id):
+def update_promotion(
+    db,
+    promotion_id,
+    *,
+    state,
+    version,
+    correlation_id,
+    metadata=None,
+):
     timestamp = NOW + timedelta(seconds=1)
     with db.connection_scope() as conn:
         conn.execute(
@@ -127,7 +137,7 @@ def update_promotion(db, promotion_id, *, state, version, correlation_id):
                     WHEN ? = 'REVOKED' THEN ?
                     ELSE revoked_at
                 END,
-                reason_code = ?, reason = ?, correlation_id = ?
+                reason_code = ?, reason = ?, correlation_id = ?, metadata = ?
             WHERE promotion_id = ?
             """,
             (
@@ -141,6 +151,7 @@ def update_promotion(db, promotion_id, *, state, version, correlation_id):
                 f"to_{state.lower()}",
                 f"transitioned to {state}",
                 correlation_id,
+                json.dumps(metadata or {}, sort_keys=True),
                 promotion_id,
             ),
         )
@@ -157,7 +168,7 @@ def db():
 
 @pytest.fixture
 def fake_transitions(monkeypatch):
-    calls = {"transition": [], "revoke": []}
+    calls = {"transition": []}
 
     def transition(db, promotion_id, transition_body, correlation_id):
         calls["transition"].append(transition_body)
@@ -167,20 +178,10 @@ def fake_transitions(monkeypatch):
             state=transition_body.next_state,
             version=transition_body.expected_version + 1,
             correlation_id=correlation_id,
-        )
-
-    def revoke(db, promotion_id, revoke_body, correlation_id):
-        calls["revoke"].append(revoke_body)
-        return update_promotion(
-            db,
-            promotion_id,
-            state="REVOKED",
-            version=revoke_body.expected_version + 1,
-            correlation_id=correlation_id,
+            metadata=transition_body.metadata,
         )
 
     monkeypatch.setattr(service, "transition_backtest_promotion", transition)
-    monkeypatch.setattr(service, "revoke_backtest_promotion", revoke)
     return calls
 
 
@@ -212,6 +213,32 @@ def test_first_healthy_observation_starts_observing_and_replays(
     assert first.idempotent_replay is False
     assert replay.observation_id == first.observation_id
     assert replay.idempotent_replay is True
+    assert len(fake_transitions["transition"]) == 1
+    assert len(
+        service.list_backtest_promotion_observations(db, "promotion-1")
+    ) == 1
+
+
+def test_transition_replay_rejects_different_observation_identity(
+    db,
+    fake_transitions,
+):
+    insert_promotion(db)
+    service.observe_backtest_promotion(
+        db,
+        "promotion-1",
+        body(observation_key="first-observation"),
+        "corr-1",
+    )
+
+    with pytest.raises(PromotionDatabaseConflict, match="different observation"):
+        service.observe_backtest_promotion(
+            db,
+            "promotion-1",
+            body(observation_key="second-observation"),
+            "corr-2",
+        )
+
     assert len(fake_transitions["transition"]) == 1
     assert len(
         service.list_backtest_promotion_observations(db, "promotion-1")
@@ -274,11 +301,13 @@ def test_reconciliation_failures_revoke_immediately(
         "corr-1",
     )
 
+    transition = fake_transitions["transition"][0]
     assert result.action == "REVOKE"
     assert result.to_state == "REVOKED"
     assert result.reason_code == reason_code
-    assert fake_transitions["revoke"][0].reason_code == reason_code
-    assert fake_transitions["transition"] == []
+    assert transition.next_state == "REVOKED"
+    assert transition.reason_code == reason_code
+    assert transition.metadata["revocation"] is True
 
 
 def test_expired_observation_transitions_to_expired(db, fake_transitions):
