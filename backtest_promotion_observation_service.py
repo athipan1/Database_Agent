@@ -40,6 +40,14 @@ from backtest_promotion_repository import (
 OBSERVABLE_STATES = {"APPROVED_FOR_PAPER", "PAPER_OBSERVING"}
 
 
+def _adapt_sql(db, statement: str, *, parameter_count: int = 1) -> str:
+    placeholder = db.param_style
+    return statement.replace("__PARAM__", placeholder).replace(
+        "__PARAMETERS__",
+        ", ".join([placeholder] * parameter_count),
+    )
+
+
 def _max_drawdown_pct() -> float:
     try:
         value = float(
@@ -136,11 +144,14 @@ def _row_snapshot(
 
 
 def _select_observation(cursor, db, observation_id: str):
-    cursor.execute(  # nosec B608 - only trusted adapter placeholder is interpolated
-        f"""
-        SELECT * FROM backtest_promotion_observations
-        WHERE observation_id = {db.param_style}
-        """,
+    cursor.execute(
+        _adapt_sql(
+            db,
+            """
+            SELECT * FROM backtest_promotion_observations
+            WHERE observation_id = __PARAM__
+            """,
+        ),
         (observation_id,),
     )
     return cursor.fetchone()
@@ -170,12 +181,15 @@ def list_backtest_promotion_observations(
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
         try:
-            cursor.execute(  # nosec B608 - trusted adapter placeholder only
-                f"""
-                SELECT * FROM backtest_promotion_observations
-                WHERE promotion_id = {db.param_style}
-                ORDER BY observed_at ASC, created_at ASC, observation_id ASC
-                """,
+            cursor.execute(
+                _adapt_sql(
+                    db,
+                    """
+                    SELECT * FROM backtest_promotion_observations
+                    WHERE promotion_id = __PARAM__
+                    ORDER BY observed_at ASC, created_at ASC, observation_id ASC
+                    """,
+                ),
                 (promotion_id,),
             )
             records = []
@@ -299,18 +313,23 @@ def _persist_observation(
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
         try:
-            cursor.execute(  # nosec B608 - placeholders come from DB adapter only
-                f"""
-                INSERT INTO backtest_promotion_observations (
-                    observation_id, promotion_id, observation_key, action,
-                    reason_code, from_state, to_state, from_version, to_version,
-                    observed_at, created_at, correlation_id, paper_drawdown_pct,
-                    reconciliation_ok, duplicate_order_count, broker_order_count,
-                    database_order_count, filled_order_count, strategy_drift,
-                    emergency_halt, metadata, result_snapshot
-                ) VALUES ({', '.join([db.param_style] * 22)})
-                ON CONFLICT (observation_id) DO NOTHING
-                """,
+            cursor.execute(
+                _adapt_sql(
+                    db,
+                    """
+                    INSERT INTO backtest_promotion_observations (
+                        observation_id, promotion_id, observation_key, action,
+                        reason_code, from_state, to_state, from_version, to_version,
+                        observed_at, created_at, correlation_id, paper_drawdown_pct,
+                        reconciliation_ok, duplicate_order_count,
+                        broker_order_count, database_order_count,
+                        filled_order_count, strategy_drift, emergency_halt,
+                        metadata, result_snapshot
+                    ) VALUES (__PARAMETERS__)
+                    ON CONFLICT (observation_id) DO NOTHING
+                    """,
+                    parameter_count=22,
+                ),
                 (
                     record.observation_id,
                     record.promotion_id,
@@ -408,20 +427,23 @@ def _heartbeat(
                 correlation_id=correlation_id,
             )
             snapshot = record.model_dump(mode="json")
-            cursor.execute(  # nosec B608 - values remain bound parameters
-                f"""
-                UPDATE backtest_promotions
-                SET version = {db.param_style},
-                    updated_at = {db.param_style},
-                    last_observed_at = {db.param_style},
-                    reason_code = {db.param_style},
-                    reason = {db.param_style},
-                    correlation_id = {db.param_style},
-                    metadata = {db.param_style}
-                WHERE promotion_id = {db.param_style}
-                  AND state = {db.param_style}
-                  AND version = {db.param_style}
-                """,
+            cursor.execute(
+                _adapt_sql(
+                    db,
+                    """
+                    UPDATE backtest_promotions
+                    SET version = __PARAM__,
+                        updated_at = __PARAM__,
+                        last_observed_at = __PARAM__,
+                        reason_code = __PARAM__,
+                        reason = __PARAM__,
+                        correlation_id = __PARAM__,
+                        metadata = __PARAM__
+                    WHERE promotion_id = __PARAM__
+                      AND state = __PARAM__
+                      AND version = __PARAM__
+                    """,
+                ),
                 (
                     updated.version,
                     _db_time(db, updated.updated_at),
@@ -446,17 +468,22 @@ def _heartbeat(
                 raise StalePromotionVersion(
                     "paper observation heartbeat lost optimistic concurrency race"
                 )
-            cursor.execute(  # nosec B608 - placeholders are adapter constants
-                f"""
-                INSERT INTO backtest_promotion_observations (
-                    observation_id, promotion_id, observation_key, action,
-                    reason_code, from_state, to_state, from_version, to_version,
-                    observed_at, created_at, correlation_id, paper_drawdown_pct,
-                    reconciliation_ok, duplicate_order_count, broker_order_count,
-                    database_order_count, filled_order_count, strategy_drift,
-                    emergency_halt, metadata, result_snapshot
-                ) VALUES ({', '.join([db.param_style] * 22)})
-                """,
+            cursor.execute(
+                _adapt_sql(
+                    db,
+                    """
+                    INSERT INTO backtest_promotion_observations (
+                        observation_id, promotion_id, observation_key, action,
+                        reason_code, from_state, to_state, from_version, to_version,
+                        observed_at, created_at, correlation_id, paper_drawdown_pct,
+                        reconciliation_ok, duplicate_order_count,
+                        broker_order_count, database_order_count,
+                        filled_order_count, strategy_drift, emergency_halt,
+                        metadata, result_snapshot
+                    ) VALUES (__PARAMETERS__)
+                    """,
+                    parameter_count=22,
+                ),
                 (
                     record.observation_id,
                     record.promotion_id,
