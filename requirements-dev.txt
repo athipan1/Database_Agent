@@ -1,6 +1,14 @@
 pytest
+pytest-cov
+coverage
 httpx
 alpaca-py
 tenacity
 schedule
 pytz
+ruff
+mypy
+pip-audit
+bandit
+openapi-spec-validator
+cyclonedx-bom
