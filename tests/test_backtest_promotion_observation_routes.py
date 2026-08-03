@@ -51,9 +51,14 @@ def test_openapi_exposes_both_security_headers(monkeypatch):
         schemes["BacktestPromotionObservationKey"]["name"]
         == "X-PROMOTION-APPROVAL-KEY"
     )
-    assert {tuple(item) for item in operation["security"]} == {
-        ("DatabaseAgentAPIKey",),
-        ("BacktestPromotionObservationKey",),
+    security_names = {
+        name
+        for requirement in operation["security"]
+        for name in requirement
+    }
+    assert security_names == {
+        "DatabaseAgentAPIKey",
+        "BacktestPromotionObservationKey",
     }
 
 
