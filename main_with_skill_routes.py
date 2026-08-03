@@ -1,11 +1,8 @@
 """Database_Agent production runtime entrypoint.
 
 The modular ``main.py`` facade assembles the core API while this entrypoint
-installs the atomic strategy-bucket order creation contract, the account-aware
-order execution contract, and Curator-facing skill telemetry routes.
-
-Curator routes are merged by ``path + methods`` signature. Existing routes are
-preserved and only missing routes are appended.
+installs atomic order contracts, promotion observation reconciliation, and
+Curator-facing skill telemetry routes.
 """
 
 from __future__ import annotations
@@ -14,6 +11,13 @@ import logging
 from contextlib import asynccontextmanager
 
 import main as main_module
+from backtest_promotion_observation_routes import (
+    create_backtest_promotion_observation_routes,
+    install_backtest_promotion_observation_openapi,
+)
+from backtest_promotion_observation_service import (
+    setup_backtest_promotion_observation_tables,
+)
 from order_creation_persistence import install_strategy_bucket_order_creation
 from order_execution_contract import install_order_execution_contract
 from skill_performance_repository import setup_skill_performance_tables
@@ -37,8 +41,6 @@ def _route_signature(route) -> tuple[str, frozenset[str]]:
 
 
 def _mount_missing_routes(name: str, router) -> None:
-    """Append only routes not already registered on the active FastAPI app."""
-
     existing_signatures = {
         _route_signature(route) for route in app.router.routes
     }
@@ -70,6 +72,15 @@ _mount_missing_routes(
     "skill-performance",
     create_skill_performance_routes(db, get_api_key, get_correlation_id),
 )
+_mount_missing_routes(
+    "backtest-promotion-observations",
+    create_backtest_promotion_observation_routes(
+        db,
+        get_api_key,
+        get_correlation_id,
+    ),
+)
+install_backtest_promotion_observation_openapi(app)
 
 
 _base_lifespan = app.router.lifespan_context
@@ -77,14 +88,13 @@ _base_lifespan = app.router.lifespan_context
 
 @asynccontextmanager
 async def runtime_lifespan(app_instance):
-    """Run core startup first, then verify Curator-facing tables."""
-
     async with _base_lifespan(app_instance):
         try:
             setup_skill_performance_tables(db)
-            logging.info("Skill performance table verification/creation complete.")
+            setup_backtest_promotion_observation_tables(db)
+            logging.info("Runtime extension table verification complete.")
         except Exception:
-            logging.exception("Failed to verify/create skill performance tables.")
+            logging.exception("Failed to verify runtime extension tables.")
             raise
         yield
 
