@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from typing import Callable
 
 from fastapi import HTTPException, Security
@@ -33,7 +34,10 @@ def create_api_key_dependency(
         configured_api_key = settings.database_agent_api_key
         if settings.database_dev_mode and not configured_api_key:
             return "dev-mode"
-        if configured_api_key and supplied_api_key == configured_api_key:
+        if configured_api_key and supplied_api_key and hmac.compare_digest(
+            supplied_api_key.encode("utf-8"),
+            configured_api_key.encode("utf-8"),
+        ):
             return supplied_api_key
         raise HTTPException(
             status_code=403,
