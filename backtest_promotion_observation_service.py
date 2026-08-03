@@ -20,6 +20,7 @@ from backtest_promotion_base import (
     _utc_now,
 )
 from backtest_promotion_models import (
+    PromotionState,
     RevokeBacktestPromotionBody,
     TransitionBacktestPromotionBody,
 )
@@ -127,6 +128,8 @@ def _row_snapshot(
     snapshot = _json_loads(mapping.get("result_snapshot"))
     if not snapshot:
         return None
+    snapshot["observed_at"] = _parse_datetime(snapshot.get("observed_at"))
+    snapshot["created_at"] = _parse_datetime(snapshot.get("created_at"))
     if replay is not None:
         snapshot["idempotent_replay"] = replay
     return BacktestPromotionObservationRecord.model_validate(snapshot)
@@ -538,7 +541,13 @@ def observe_backtest_promotion(
     effective_correlation_id = correlation_id or body.correlation_id
 
     if action == "HEARTBEAT":
-        _validate_current_for_heartbeat(promotion, body)
+        try:
+            _validate_current_for_heartbeat(promotion, body)
+        except (PromotionTerminalState, StalePromotionVersion):
+            replay = get_backtest_promotion_observation(db, observation_id)
+            if replay is not None:
+                return replay
+            raise
         return _heartbeat(
             db,
             promotion,
@@ -553,7 +562,7 @@ def observe_backtest_promotion(
             promotion_id,
             RevokeBacktestPromotionBody(
                 expected_version=body.expected_version,
-                reason_code=reason_code,
+                reason_code=cast(Any, reason_code),
                 reason=reason,
                 correlation_id=effective_correlation_id,
                 approver="paper-observation-reconciler",
@@ -561,7 +570,10 @@ def observe_backtest_promotion(
             effective_correlation_id,
         )
     else:
-        next_state = "EXPIRED" if action == "EXPIRE" else "PAPER_OBSERVING"
+        next_state = cast(
+            PromotionState,
+            "EXPIRED" if action == "EXPIRE" else "PAPER_OBSERVING",
+        )
         updated = transition_backtest_promotion(
             db,
             promotion_id,
