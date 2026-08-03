@@ -15,6 +15,8 @@ from app.routers.accounts_orders import create_accounts_orders_router
 from app.routers.execution import create_execution_router
 from app.routers.history import create_history_router
 from app.routers.system import create_system_router
+from backtest_promotion_routes import create_backtest_promotion_routes
+from backtest_routes import create_backtest_routes
 from finance_routes import create_finance_routes
 from plan_record_routes import create_plan_record_routes
 from policy_review_routes import create_policy_review_routes
@@ -61,6 +63,22 @@ def create_application(runtime: Any) -> FastAPI:
     mount_router_routes(
         app,
         create_profit_lifecycle_routes(
+            runtime.db,
+            runtime.get_api_key,
+            runtime.get_correlation_id,
+        ),
+    )
+    mount_router_routes(
+        app,
+        create_backtest_routes(
+            runtime.db,
+            runtime.get_api_key,
+            runtime.get_correlation_id,
+        ),
+    )
+    mount_router_routes(
+        app,
+        create_backtest_promotion_routes(
             runtime.db,
             runtime.get_api_key,
             runtime.get_correlation_id,
