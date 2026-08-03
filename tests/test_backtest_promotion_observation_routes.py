@@ -83,7 +83,7 @@ def _payload() -> dict:
     }
 
 
-def test_openapi_exposes_both_security_headers(monkeypatch):
+def test_openapi_requires_both_security_headers(monkeypatch):
     monkeypatch.setenv("BACKTEST_PROMOTION_APPROVAL_TOKEN", "approval-key")
     schema = _client().get("/openapi.json").json()
     operation = schema["paths"][
@@ -96,15 +96,12 @@ def test_openapi_exposes_both_security_headers(monkeypatch):
         schemes["BacktestPromotionObservationKey"]["name"]
         == "X-PROMOTION-APPROVAL-KEY"
     )
-    security_names = {
-        name
-        for requirement in operation["security"]
-        for name in requirement
-    }
-    assert security_names == {
-        "DatabaseAgentAPIKey",
-        "BacktestPromotionObservationKey",
-    }
+    assert operation["security"] == [
+        {
+            "DatabaseAgentAPIKey": [],
+            "BacktestPromotionObservationKey": [],
+        }
+    ]
 
 
 def test_post_requires_service_and_observation_credentials(monkeypatch):
