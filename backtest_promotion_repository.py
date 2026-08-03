@@ -1,3 +1,7 @@
+from backtest_json_contract import install_strict_backtest_json_contract
+
+install_strict_backtest_json_contract()
+
 from backtest_promotion_base import (
     DuplicatePromotionTransition,
     InvalidPromotionTransition,
