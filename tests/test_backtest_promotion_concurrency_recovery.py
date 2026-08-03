@@ -47,6 +47,10 @@ def _body() -> TransitionBacktestPromotionBody:
     )
 
 
+def _postgres_stub():
+    return SimpleNamespace(db_type="postgres")
+
+
 def test_identical_post_lock_stale_version_recovers_completed_snapshot(monkeypatch):
     expected = _record(replay=True)
 
@@ -61,7 +65,7 @@ def test_identical_post_lock_stale_version_recovers_completed_snapshot(monkeypat
     )
 
     result = concurrency.transition_backtest_promotion(
-        SimpleNamespace(),
+        _postgres_stub(),
         "promotion-1",
         _body(),
         "corr-retry",
@@ -83,7 +87,7 @@ def test_different_stale_request_remains_blocked(monkeypatch):
 
     with pytest.raises(StalePromotionVersion):
         concurrency.transition_backtest_promotion(
-            SimpleNamespace(),
+            _postgres_stub(),
             "promotion-1",
             _body(),
             "corr-stale",
