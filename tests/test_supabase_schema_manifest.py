@@ -34,6 +34,13 @@ def test_schema_manifest_matches_runtime_identity_and_core_contract():
         "signal_history",
         "performance_metrics",
         "database_agent_schema_metadata",
+        "market_data_bars",
+        "backtest_runs",
+        "backtest_trades",
+        "backtest_equity_curve",
+        "skill_backtest_results",
+        "backtest_promotions",
+        "backtest_promotion_transitions",
     }
     assert required.issubset(set(manifest["tables"]))
 

@@ -10,4 +10,5 @@ schedule
 pytz
 python-json-logger
 prometheus-fastapi-instrumentator
+prometheus-client
 redis

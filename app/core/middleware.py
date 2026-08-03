@@ -27,6 +27,7 @@ def install_correlation_id_middleware(
         correlation_id = (
             request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
         )
+        request.state.correlation_id = correlation_id
         token = correlation_id_context.set(correlation_id)
         try:
             response = await call_next(request)

@@ -2,7 +2,7 @@
 
 The modular ``main.py`` facade assembles the core API while this entrypoint
 installs the atomic strategy-bucket order creation contract, the account-aware
-order execution contract, and Curator-facing routes.
+order execution contract, and Curator-facing skill telemetry routes.
 
 Curator routes are merged by ``path + methods`` signature. Existing routes are
 preserved and only missing routes are appended.
@@ -14,8 +14,6 @@ import logging
 from contextlib import asynccontextmanager
 
 import main as main_module
-from backtest_repository import setup_backtest_tables
-from backtest_routes import create_backtest_routes
 from order_creation_persistence import install_strategy_bucket_order_creation
 from order_execution_contract import install_order_execution_contract
 from skill_performance_repository import setup_skill_performance_tables
@@ -72,10 +70,6 @@ _mount_missing_routes(
     "skill-performance",
     create_skill_performance_routes(db, get_api_key, get_correlation_id),
 )
-_mount_missing_routes(
-    "backtests",
-    create_backtest_routes(db, get_api_key, get_correlation_id),
-)
 
 
 _base_lifespan = app.router.lifespan_context
@@ -88,15 +82,9 @@ async def runtime_lifespan(app_instance):
     async with _base_lifespan(app_instance):
         try:
             setup_skill_performance_tables(db)
-            setup_backtest_tables(db)
-            logging.info(
-                "Skill performance and backtest tables "
-                "verification/creation complete."
-            )
+            logging.info("Skill performance table verification/creation complete.")
         except Exception:
-            logging.exception(
-                "Failed to verify/create skill performance and backtest tables."
-            )
+            logging.exception("Failed to verify/create skill performance tables.")
             raise
         yield
 

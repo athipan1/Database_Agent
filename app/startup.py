@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from backtest_promotion_repository import setup_backtest_promotion_tables
+from backtest_repository import setup_backtest_tables
 from broker_sync_repository import setup_broker_sync_tables
 from execution_job_repository import setup_execution_job_table
 from fill_repository import setup_fill_table
@@ -27,6 +29,8 @@ def setup_runtime_tables(db) -> None:
     setup_plan_record_table(db)
     setup_policy_review_table(db)
     setup_profit_lifecycle_tables(db)
+    setup_backtest_tables(db)
+    setup_backtest_promotion_tables(db)
     setup_schema_identity_table(db)
 
 
