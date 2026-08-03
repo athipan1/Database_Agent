@@ -570,9 +570,8 @@ def observe_backtest_promotion(
             effective_correlation_id,
         )
     else:
-        next_state = cast(
-            PromotionState,
-            "EXPIRED" if action == "EXPIRE" else "PAPER_OBSERVING",
+        next_state: PromotionState = (
+            "EXPIRED" if action == "EXPIRE" else "PAPER_OBSERVING"
         )
         updated = transition_backtest_promotion(
             db,
