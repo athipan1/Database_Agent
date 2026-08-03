@@ -6,7 +6,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from backtest_promotion_base import PromotionEvidenceMismatch, setup_backtest_promotion_tables
+from backtest_promotion_base import (
+    PromotionEvidenceMismatch,
+    PromotionExpired,
+    PromotionNotFound,
+    setup_backtest_promotion_tables,
+)
 from backtest_promotion_exact_lookup import get_latest_exact_backtest_promotion
 
 
@@ -35,6 +40,7 @@ def _insert(
     state: str,
     created_at: datetime,
     updated_at: datetime,
+    expires_at: datetime | None = None,
 ):
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
@@ -64,7 +70,7 @@ def _insert(
                 1,
                 created_at.isoformat(),
                 updated_at.isoformat(),
-                (created_at + timedelta(days=7)).isoformat(),
+                (expires_at or created_at + timedelta(days=7)).isoformat(),
                 "test",
                 "test evidence",
                 "corr-test",
@@ -73,6 +79,17 @@ def _insert(
         )
         conn.commit()
         cursor.close()
+
+
+def _lookup(db, **overrides):
+    arguments = {
+        "account_id": "account-1",
+        "symbol": "AAPL",
+        "strategy_id": "strategy-1",
+        "timeframe": "1d",
+    }
+    arguments.update(overrides)
+    return get_latest_exact_backtest_promotion(db, **arguments)
 
 
 def test_newer_failed_evidence_cannot_be_hidden_by_older_late_update():
@@ -98,24 +115,57 @@ def test_newer_failed_evidence_cannot_be_hidden_by_older_late_update():
         updated_at=now - timedelta(hours=1),
     )
 
-    newest = get_latest_exact_backtest_promotion(
-        db,
-        account_id="account-1",
-        symbol="aapl",
-        strategy_id="strategy-1",
-        timeframe="1D",
-    )
+    newest = _lookup(db, symbol="aapl", timeframe="1D")
     assert newest.promotion_id == "promotion-new-failed"
     assert newest.state == "FAILED"
 
     with pytest.raises(PromotionEvidenceMismatch) as exc_info:
-        get_latest_exact_backtest_promotion(
-            db,
-            account_id="account-1",
-            symbol="AAPL",
-            strategy_id="strategy-1",
-            timeframe="1d",
-            required_state="APPROVED_FOR_PAPER",
-        )
+        _lookup(db, required_state="APPROVED_FOR_PAPER")
     assert exc_info.value.metadata["promotion_id"] == "promotion-new-failed"
+    db.conn.close()
+
+
+def test_exact_lookup_fails_closed_when_no_identity_matches():
+    db = LookupDB()
+    setup_backtest_promotion_tables(db)
+    with pytest.raises(PromotionNotFound, match="no exact backtest promotion"):
+        _lookup(db)
+    db.conn.close()
+
+
+def test_exact_lookup_rejects_expired_promotion():
+    db = LookupDB()
+    setup_backtest_promotion_tables(db)
+    now = datetime.now(timezone.utc)
+    _insert(
+        db,
+        promotion_id="promotion-expired",
+        run_id="run-expired",
+        fingerprint="c" * 64,
+        state="APPROVED_FOR_PAPER",
+        created_at=now - timedelta(days=8),
+        updated_at=now - timedelta(days=8),
+        expires_at=now - timedelta(seconds=1),
+    )
+    with pytest.raises(PromotionExpired, match="is expired"):
+        _lookup(db)
+    db.conn.close()
+
+
+def test_exact_lookup_rejects_record_older_than_requested_age():
+    db = LookupDB()
+    setup_backtest_promotion_tables(db)
+    now = datetime.now(timezone.utc)
+    _insert(
+        db,
+        promotion_id="promotion-stale",
+        run_id="run-stale",
+        fingerprint="d" * 64,
+        state="APPROVED_FOR_PAPER",
+        created_at=now - timedelta(hours=3),
+        updated_at=now,
+        expires_at=now + timedelta(days=1),
+    )
+    with pytest.raises(PromotionExpired, match="max_age_hours=1"):
+        _lookup(db, max_age_hours=1)
     db.conn.close()
