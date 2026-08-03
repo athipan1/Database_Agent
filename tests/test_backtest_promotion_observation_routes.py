@@ -37,6 +37,7 @@ def _client() -> TestClient:
             _correlation_id,
         )
     )
+    routes.install_backtest_promotion_observation_openapi(app)
     return TestClient(app)
 
 
