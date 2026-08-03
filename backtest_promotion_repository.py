@@ -17,15 +17,15 @@ from backtest_promotion_base import (
     deterministic_transition_id,
     setup_backtest_promotion_tables,
 )
+from backtest_promotion_concurrency import (
+    revoke_backtest_promotion,
+    transition_backtest_promotion,
+)
 from backtest_promotion_exact_lookup import get_latest_exact_backtest_promotion
 from backtest_promotion_store import (
     create_backtest_promotion,
     get_backtest_promotion,
     list_backtest_promotion_history,
-)
-from backtest_promotion_transition import (
-    revoke_backtest_promotion,
-    transition_backtest_promotion,
 )
 
 __all__ = [
