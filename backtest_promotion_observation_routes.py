@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hmac
 import os
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Security
 from fastapi.security import APIKeyHeader
@@ -32,7 +32,7 @@ def install_backtest_promotion_observation_openapi(app: Any) -> None:
     original_openapi = app.openapi
 
     def observation_openapi() -> dict[str, Any]:
-        schema = original_openapi()
+        schema = cast(dict[str, Any], original_openapi())
         operation = schema.get("paths", {}).get(_OBSERVATION_PATH, {}).get("post")
         if operation is not None:
             operation["security"] = _OBSERVATION_WRITE_SECURITY
