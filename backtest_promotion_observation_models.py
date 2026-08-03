@@ -52,6 +52,19 @@ class ObserveBacktestPromotionBody(StrictObservationModel):
             raise ValueError("observation_key contains unsupported characters")
         return value
 
+    @field_validator("observed_at", mode="before")
+    @classmethod
+    def parse_observed_at(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized.endswith("Z"):
+                normalized = f"{normalized[:-1]}+00:00"
+            try:
+                return datetime.fromisoformat(normalized)
+            except ValueError as exc:
+                raise ValueError("observed_at must be ISO-8601") from exc
+        return value
+
     @field_validator("observed_at")
     @classmethod
     def validate_observed_at(cls, value: datetime) -> datetime:
