@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -145,6 +146,7 @@ def test_transition_then_ledger_failure_is_recovered_on_retry(monkeypatch):
         if persisted_transition is not None:
             return persisted_transition.model_copy(update={"idempotent_replay": True})
         current = get_backtest_promotion(database, promotion_id)
+        metadata = {**current.metadata, **transition_body.metadata}
         updated = current.model_copy(
             update={
                 "state": transition_body.next_state,
@@ -153,6 +155,7 @@ def test_transition_then_ledger_failure_is_recovered_on_retry(monkeypatch):
                 "paper_observing_at": NOW,
                 "last_observed_at": NOW,
                 "correlation_id": correlation_id,
+                "metadata": metadata,
                 "idempotent_replay": False,
             }
         )
@@ -162,7 +165,7 @@ def test_transition_then_ledger_failure_is_recovered_on_retry(monkeypatch):
                 UPDATE backtest_promotions
                 SET state = ?, version = ?, updated_at = ?,
                     paper_observing_at = ?, last_observed_at = ?,
-                    correlation_id = ?
+                    correlation_id = ?, metadata = ?
                 WHERE promotion_id = ? AND version = ?
                 """,
                 (
@@ -172,6 +175,7 @@ def test_transition_then_ledger_failure_is_recovered_on_retry(monkeypatch):
                     NOW.isoformat(),
                     NOW.isoformat(),
                     correlation_id,
+                    json.dumps(metadata, sort_keys=True),
                     promotion_id,
                     transition_body.expected_version,
                 ),
