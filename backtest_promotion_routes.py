@@ -191,9 +191,14 @@ def create_backtest_promotion_routes(
         tags=["backtest-promotions"],
         route_class=PromotionAPIRoute,
     )
-    api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
+    api_key_header = APIKeyHeader(
+        name="X-API-KEY",
+        scheme_name="DatabaseAgentAPIKey",
+        auto_error=False,
+    )
     approval_key_header = APIKeyHeader(
         name="X-PROMOTION-APPROVAL-KEY",
+        scheme_name="BacktestPromotionApprovalKey",
         auto_error=False,
     )
 

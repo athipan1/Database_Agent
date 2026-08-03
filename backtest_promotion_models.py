@@ -57,6 +57,13 @@ def _validate_json_tree(value: Any, *, path: str = "metadata") -> Any:
     raise ValueError(f"{path} contains unsupported value type {type(value).__name__}")
 
 
+def _validate_metadata_object(value: Dict[str, Any]) -> Dict[str, Any]:
+    validated = _validate_json_tree(value)
+    if not isinstance(validated, dict):
+        raise ValueError("metadata must be an object")
+    return validated
+
+
 class StrictPromotionModel(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -134,7 +141,7 @@ class CreateBacktestPromotionBody(StrictPromotionModel):
     @field_validator("metadata")
     @classmethod
     def validate_metadata(cls, value: Dict[str, Any]) -> Dict[str, Any]:
-        return _validate_json_tree(value)
+        return _validate_metadata_object(value)
 
 
 class TransitionBacktestPromotionBody(StrictPromotionModel):
@@ -159,7 +166,7 @@ class TransitionBacktestPromotionBody(StrictPromotionModel):
     @field_validator("metadata")
     @classmethod
     def validate_metadata(cls, value: Dict[str, Any]) -> Dict[str, Any]:
-        return _validate_json_tree(value)
+        return _validate_metadata_object(value)
 
     @model_validator(mode="after")
     def reject_noop(self) -> "TransitionBacktestPromotionBody":
