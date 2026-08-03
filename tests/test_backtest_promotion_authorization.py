@@ -82,7 +82,7 @@ def test_metadata_accepts_finite_nested_json_and_preserves_shape():
     [
         ("run_id", "bad id", "unsupported characters"),
         ("timeframe", "daily", "canonical value"),
-        ("dataset_fingerprint", "not-a-digest", "hexadecimal digest"),
+        ("dataset_fingerprint", "z" * 32, "hexadecimal digest"),
         ("expires_at", datetime(2026, 8, 3, 3, 0, 0), "include a timezone"),
     ],
 )
@@ -96,7 +96,7 @@ def test_create_contract_rejects_malformed_identity_fields(field, value, message
 def test_metadata_rejects_non_string_key_and_unsupported_object():
     payload = _create_payload()
     payload["metadata"] = {1: "bad-key"}
-    with pytest.raises(ValidationError, match="keys must be strings"):
+    with pytest.raises(ValidationError, match="valid string"):
         CreateBacktestPromotionBody.model_validate(payload)
 
     payload["metadata"] = {"bad": object()}
