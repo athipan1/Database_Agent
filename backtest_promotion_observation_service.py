@@ -21,7 +21,6 @@ from backtest_promotion_base import (
 )
 from backtest_promotion_models import (
     PromotionState,
-    RevokeBacktestPromotionBody,
     TransitionBacktestPromotionBody,
 )
 from backtest_promotion_observation_models import (
@@ -32,7 +31,6 @@ from backtest_promotion_observation_models import (
 )
 from backtest_promotion_repository import (
     get_backtest_promotion,
-    revoke_backtest_promotion,
     transition_backtest_promotion,
 )
 
@@ -546,6 +544,7 @@ def _validate_transition_or_replay(
     promotion,
     body: ObserveBacktestPromotionBody,
     action: ObservationAction,
+    observation_id: str,
 ) -> None:
     if (
         promotion.state == body.expected_state
@@ -563,7 +562,15 @@ def _validate_transition_or_replay(
         promotion.state == target_state
         and promotion.version == body.expected_version + 1
     ):
-        return
+        metadata = promotion.metadata if isinstance(promotion.metadata, dict) else {}
+        if (
+            metadata.get("observation_id") == observation_id
+            and metadata.get("observation_key") == body.observation_key
+        ):
+            return
+        raise PromotionDatabaseConflict(
+            "promotion transition replay belongs to a different observation"
+        )
     if promotion.state not in OBSERVABLE_STATES:
         raise PromotionTerminalState(
             f"promotion state {promotion.state} cannot be paper-observed"
@@ -618,47 +625,42 @@ def observe_backtest_promotion(
             effective_correlation_id,
         )
 
-    _validate_transition_or_replay(promotion, body, action)
+    _validate_transition_or_replay(
+        promotion,
+        body,
+        action,
+        observation_id,
+    )
     if action == "REVOKE":
-        updated = revoke_backtest_promotion(
-            db,
-            promotion_id,
-            RevokeBacktestPromotionBody(
-                expected_version=body.expected_version,
-                reason_code=cast(Any, reason_code),
-                reason=reason,
-                correlation_id=effective_correlation_id,
-                approver="paper-observation-reconciler",
-            ),
-            effective_correlation_id,
-        )
+        next_state: PromotionState = "REVOKED"
+    elif action == "EXPIRE":
+        next_state = "EXPIRED"
     else:
-        next_state: PromotionState = (
-            "EXPIRED" if action == "EXPIRE" else "PAPER_OBSERVING"
-        )
-        updated = transition_backtest_promotion(
-            db,
-            promotion_id,
-            TransitionBacktestPromotionBody(
-                expected_state=body.expected_state,
-                expected_version=body.expected_version,
-                next_state=next_state,
-                reason_code=reason_code,
-                reason=reason,
-                evidence_run_id=promotion.run_id,
-                correlation_id=effective_correlation_id,
-                evidence_version=promotion.evidence_version,
-                approver="paper-observation-reconciler",
-                metadata={
-                    **body.metadata,
-                    "observation_id": observation_id,
-                    "observation_key": body.observation_key,
-                    "paper_drawdown_pct": body.paper_drawdown_pct,
-                    "reconciliation_ok": body.reconciliation_ok,
-                },
-            ),
-            effective_correlation_id,
-        )
+        next_state = "PAPER_OBSERVING"
+    updated = transition_backtest_promotion(
+        db,
+        promotion_id,
+        TransitionBacktestPromotionBody(
+            expected_state=body.expected_state,
+            expected_version=body.expected_version,
+            next_state=next_state,
+            reason_code=reason_code,
+            reason=reason,
+            evidence_run_id=promotion.run_id,
+            correlation_id=effective_correlation_id,
+            evidence_version=promotion.evidence_version,
+            approver="paper-observation-reconciler",
+            metadata={
+                **body.metadata,
+                "observation_id": observation_id,
+                "observation_key": body.observation_key,
+                "paper_drawdown_pct": body.paper_drawdown_pct,
+                "reconciliation_ok": body.reconciliation_ok,
+                "revocation": action == "REVOKE",
+            },
+        ),
+        effective_correlation_id,
+    )
 
     record = _record(
         observation_id=observation_id,
