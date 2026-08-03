@@ -247,7 +247,8 @@ jobs:
 
       - name: Run container and require healthy readiness
         run: |
-          docker run --detach --rm \
+          docker rm --force database-agent-promotion-ci 2>/dev/null || true
+          docker run --detach \
             --name database-agent-promotion-ci \
             --network host \
             --env POSTGRES_HOST=127.0.0.1 \
@@ -264,8 +265,20 @@ jobs:
             --env TRADING_MODE=PAPER \
             database-agent:promotion-ci
 
-          trap 'docker logs database-agent-promotion-ci || true; docker stop database-agent-promotion-ci || true' EXIT
+          cleanup() {
+            docker logs database-agent-promotion-ci || true
+            docker rm --force database-agent-promotion-ci || true
+          }
+          trap cleanup EXIT
+
           for attempt in $(seq 1 60); do
+            running="$(docker inspect database-agent-promotion-ci --format '{{.State.Running}}')"
+            if [ "$running" != "true" ]; then
+              docker inspect database-agent-promotion-ci --format 'exit={{.State.ExitCode}} error={{.State.Error}}'
+              docker logs database-agent-promotion-ci
+              exit 1
+            fi
+
             status="$(docker inspect database-agent-promotion-ci --format '{{.State.Health.Status}}')"
             if [ "$status" = "healthy" ]; then
               curl --fail --silent http://127.0.0.1:8004/health >/dev/null
