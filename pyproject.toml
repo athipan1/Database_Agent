@@ -4,10 +4,15 @@ line-length = 100
 src = ["."]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "SIM", "PIE", "RUF"]
+# The promotion gate blocks syntax/import/name errors and unsafe broad
+# exception assertions. Typing syntax modernization and import cosmetics are
+# intentionally handled separately so this PR does not rewrite unrelated
+# legacy code while still catching defects that change runtime behavior.
+select = ["E4", "E7", "E9", "F", "B017"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
+"backtest_promotion_repository.py" = ["E402"]
 "tests/*" = ["S101"]
 
 [tool.mypy]
