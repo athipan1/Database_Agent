@@ -59,7 +59,7 @@ def install_exception_handlers(app: FastAPI, response_wrapper=wrap_response) -> 
                     status="error",
                     error={
                         "code": "INTERNAL_SERVER_ERROR",
-                        "message": str(exc),
+                        "message": "The request could not be completed safely.",
                         "retryable": False,
                     },
                 )
