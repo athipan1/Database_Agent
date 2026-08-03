@@ -31,7 +31,7 @@ Every transition supplies `expected_state`, `expected_version`, `next_state`, `e
 
 The transition ID is deterministic from promotion ID, expected version, expected state, next state, evidence run ID, and reason code. A completed transition stores its result snapshot. Replaying the identical request returns the original snapshot with `idempotent_replay=true`, creates no additional history row, and does not increment version, even after later transitions.
 
-## API
+## API and authorization
 
 All endpoints require `X-API-KEY` and return schema `backtest-promotion.v1`:
 
@@ -41,6 +41,8 @@ All endpoints require `X-API-KEY` and return schema `backtest-promotion.v1`:
 - `GET /backtests/promotions/latest/exact`
 - `GET /backtests/promotions/{promotion_id}/history`
 - `POST /backtests/promotions/{promotion_id}/revoke`
+
+Transitions to `APPROVED_FOR_PAPER`, `PAPER_OBSERVING`, `REVOKED`, or `EXPIRED` additionally require `X-PROMOTION-APPROVAL-KEY`. The value is compared in constant time against `BACKTEST_PROMOTION_APPROVAL_TOKEN`. The secret is never accepted in the request body and must never be logged. Missing configuration fails closed. This prevents Backtest_Agent from approving paper trading even when it has the ordinary Database_Agent service key.
 
 Exact lookup first selects the newest promotion for account, symbol, strategy, and timeframe. Optional state, age, profile, engine, and dataset filters are checked afterward. This prevents an older approved row from hiding a newer failed, revoked, expired, or incompatible row.
 
@@ -53,6 +55,7 @@ Migration `003_backtest_promotion_lifecycle.up.sql` is additive. Historical back
 ```text
 BACKTEST_PROMOTION_AUTO_APPROVE_PAPER=false
 BACKTEST_PROMOTION_APPROVAL_REQUIRED=true
+BACKTEST_PROMOTION_APPROVAL_TOKEN=<secret managed outside Git>
 BACKTEST_PROMOTION_EVIDENCE_MAX_AGE_HOURS=168
 BACKTEST_PROMOTION_MAX_AGE_HOURS=168
 BACKTEST_PROMOTION_MIN_ROBUSTNESS_PASS_RATE=0.80
