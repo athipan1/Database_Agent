@@ -16,6 +16,14 @@ from backtest_promotion_observation_service import (
 from backtest_promotion_routes import _envelope, _promotion_error_response
 
 
+_OBSERVATION_WRITE_SECURITY = [
+    {
+        "DatabaseAgentAPIKey": [],
+        "BacktestPromotionObservationKey": [],
+    }
+]
+
+
 def _require_observation_credential(value: Optional[str]) -> None:
     expected = os.getenv("BACKTEST_PROMOTION_APPROVAL_TOKEN", "")
     if not expected or not value:
@@ -50,7 +58,11 @@ def create_backtest_promotion_observation_routes(
     async def _correlation_id():
         return await get_correlation_id_dependency()
 
-    @router.post("/{promotion_id}", response_model=dict)
+    @router.post(
+        "/{promotion_id}",
+        response_model=dict,
+        openapi_extra={"security": _OBSERVATION_WRITE_SECURITY},
+    )
     async def observe_endpoint(
         promotion_id: str,
         body: ObserveBacktestPromotionBody,
