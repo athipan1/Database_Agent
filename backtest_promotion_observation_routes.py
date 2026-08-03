@@ -16,7 +16,7 @@ from backtest_promotion_observation_service import (
 from backtest_promotion_routes import _envelope, _promotion_error_response
 
 
-_OBSERVATION_WRITE_SECURITY = [
+_OBSERVATION_WRITE_SECURITY: list[dict[str, list[str]]] = [
     {
         "DatabaseAgentAPIKey": [],
         "BacktestPromotionObservationKey": [],
