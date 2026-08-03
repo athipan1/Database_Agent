@@ -1,0 +1,210 @@
+name: Promotion Observation Quality Gates
+
+on:
+  pull_request:
+    paths:
+      - "backtest_promotion_observation_*.py"
+      - "main_with_skill_routes.py"
+      - "tests/test_backtest_promotion_observation_*.py"
+      - "migrations/004_backtest_promotion_observations.*.sql"
+      - ".github/workflows/promotion-observation-quality-gates.yml"
+  push:
+    branches: [main]
+    paths:
+      - "backtest_promotion_observation_*.py"
+      - "main_with_skill_routes.py"
+      - "tests/test_backtest_promotion_observation_*.py"
+      - "migrations/004_backtest_promotion_observations.*.sql"
+      - ".github/workflows/promotion-observation-quality-gates.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promotion-observation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  quality-security-contract:
+    name: Ruff MyPy Coverage Auth Audit SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install production and quality dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Ruff observation code and tests
+        run: |
+          ruff check \
+            backtest_promotion_observation_models.py \
+            backtest_promotion_observation_routes.py \
+            backtest_promotion_observation_service.py \
+            tests/test_backtest_promotion_observation_service.py \
+            tests/test_backtest_promotion_observation_recovery.py \
+            tests/test_backtest_promotion_observation_routes.py \
+            tests/test_backtest_promotion_observation_postgres.py
+
+      - name: MyPy observation contracts
+        run: |
+          mypy \
+            backtest_promotion_observation_models.py \
+            backtest_promotion_observation_routes.py \
+            backtest_promotion_observation_service.py
+
+      - name: Observation coverage and route contract
+        env:
+          USE_SQLITE: "1"
+          DATABASE_DEV_MODE: "true"
+          DATABASE_AGENT_API_KEY: promotion-ci-key
+          BACKTEST_PROMOTION_APPROVAL_TOKEN: promotion-approval-ci-key
+        run: |
+          pytest -q \
+            tests/test_backtest_promotion_observation_service.py \
+            tests/test_backtest_promotion_observation_recovery.py \
+            tests/test_backtest_promotion_observation_routes.py \
+            --cov=backtest_promotion_observation_models \
+            --cov=backtest_promotion_observation_routes \
+            --cov=backtest_promotion_observation_service \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage-promotion-observation.xml \
+            --cov-fail-under=90
+
+      - name: Bandit targeted security scan
+        run: |
+          bandit -q -r \
+            backtest_promotion_observation_models.py \
+            backtest_promotion_observation_routes.py \
+            backtest_promotion_observation_service.py
+
+      - name: Python dependency vulnerability audit
+        run: pip-audit --strict --desc
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          cyclonedx-py environment \
+            --output-format JSON \
+            --output-file sbom-promotion-observation.cdx.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("sbom-promotion-observation.cdx.json")
+          document = json.loads(path.read_text(encoding="utf-8"))
+          assert document.get("bomFormat") == "CycloneDX"
+          assert document.get("components")
+          print(f"SBOM components: {len(document['components'])}")
+          PY
+
+      - name: Upload quality evidence
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: promotion-observation-evidence-${{ github.sha }}
+          path: |
+            coverage-promotion-observation.xml
+            sbom-promotion-observation.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  postgres-concurrency-migrations:
+    name: PostgreSQL Observation Concurrency Migration Round Trip
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_USER: promotion_ci
+          POSTGRES_PASSWORD: promotion_ci_password
+          POSTGRES_DB: promotion_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U promotion_ci -d promotion_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGPASSWORD: promotion_ci_password
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: promotion_ci
+      POSTGRES_PASSWORD: promotion_ci_password
+      POSTGRES_DB: promotion_ci
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: "6379"
+      DATABASE_PROVIDER: postgres
+      DATABASE_AGENT_API_KEY: promotion-ci-key
+      DATABASE_REQUIRE_SCHEMA_IDENTITY: "false"
+      BACKTEST_PROMOTION_APPROVAL_TOKEN: promotion-approval-ci-key
+
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Verify migration upgrade downgrade and upgrade
+        run: |
+          psql -h 127.0.0.1 -U promotion_ci -d promotion_ci \
+            -v ON_ERROR_STOP=1 \
+            -f migrations/003_backtest_promotion_lifecycle.up.sql
+          psql -h 127.0.0.1 -U promotion_ci -d promotion_ci \
+            -v ON_ERROR_STOP=1 \
+            -f migrations/004_backtest_promotion_observations.up.sql
+          test "$(psql -h 127.0.0.1 -U promotion_ci -d promotion_ci -tAc \
+            "SELECT to_regclass('public.backtest_promotion_observations')")" \
+            = "backtest_promotion_observations"
+          psql -h 127.0.0.1 -U promotion_ci -d promotion_ci \
+            -v ON_ERROR_STOP=1 \
+            -f migrations/004_backtest_promotion_observations.down.sql
+          test -z "$(psql -h 127.0.0.1 -U promotion_ci -d promotion_ci -tAc \
+            "SELECT to_regclass('public.backtest_promotion_observations')")"
+          psql -h 127.0.0.1 -U promotion_ci -d promotion_ci \
+            -v ON_ERROR_STOP=1 \
+            -f migrations/004_backtest_promotion_observations.up.sql
+
+      - name: Run real PostgreSQL observation concurrency tests
+        run: |
+          pytest -q tests/test_backtest_promotion_observation_postgres.py
