@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hmac
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Security
 from fastapi.security import APIKeyHeader
@@ -16,12 +16,32 @@ from backtest_promotion_observation_service import (
 from backtest_promotion_routes import _envelope, _promotion_error_response
 
 
+_OBSERVATION_PATH = "/backtests/promotion-observations/{promotion_id}"
 _OBSERVATION_WRITE_SECURITY: list[dict[str, list[str]]] = [
     {
         "DatabaseAgentAPIKey": [],
         "BacktestPromotionObservationKey": [],
     }
 ]
+
+
+def install_backtest_promotion_observation_openapi(app: Any) -> None:
+    marker = "_promotion_observation_openapi_installed"
+    if getattr(app.state, marker, False):
+        return
+    original_openapi = app.openapi
+
+    def observation_openapi() -> dict[str, Any]:
+        schema = original_openapi()
+        operation = schema.get("paths", {}).get(_OBSERVATION_PATH, {}).get("post")
+        if operation is not None:
+            operation["security"] = _OBSERVATION_WRITE_SECURITY
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = observation_openapi
+    app.openapi_schema = None
+    setattr(app.state, marker, True)
 
 
 def _require_observation_credential(value: Optional[str]) -> None:
@@ -58,11 +78,7 @@ def create_backtest_promotion_observation_routes(
     async def _correlation_id():
         return await get_correlation_id_dependency()
 
-    @router.post(
-        "/{promotion_id}",
-        response_model=dict,
-        openapi_extra={"security": _OBSERVATION_WRITE_SECURITY},
-    )
+    @router.post("/{promotion_id}", response_model=dict)
     async def observe_endpoint(
         promotion_id: str,
         body: ObserveBacktestPromotionBody,
