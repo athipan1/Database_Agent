@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import os
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from contextlib import nullcontext
+from datetime import timedelta, timezone
+from typing import Any, Dict, Optional, cast
 
 from backtest_promotion_base import (
-    PromotionExpired,
+    PromotionDatabaseConflict,
     PromotionTerminalState,
     PromotionValidationFailed,
     StalePromotionVersion,
+    _SQLITE_WRITE_LOCK,
     _assert_finite_json,
     _db_time,
     _json_dumps,
@@ -23,7 +25,9 @@ from backtest_promotion_models import (
 )
 from backtest_promotion_observation_models import (
     BacktestPromotionObservationRecord,
+    ObservationAction,
     ObserveBacktestPromotionBody,
+    ObservedPromotionState,
 )
 from backtest_promotion_repository import (
     get_backtest_promotion,
@@ -37,7 +41,9 @@ OBSERVABLE_STATES = {"APPROVED_FOR_PAPER", "PAPER_OBSERVING"}
 
 def _max_drawdown_pct() -> float:
     try:
-        value = float(os.getenv("BACKTEST_PROMOTION_MAX_PAPER_DRAWDOWN_PCT", "0.10"))
+        value = float(
+            os.getenv("BACKTEST_PROMOTION_MAX_PAPER_DRAWDOWN_PCT", "0.10")
+        )
     except (TypeError, ValueError):
         return 0.10
     if value <= 0 or value > 1:
@@ -65,7 +71,12 @@ def setup_backtest_promotion_observation_tables(db) -> None:
                     promotion_id TEXT NOT NULL,
                     observation_key TEXT NOT NULL,
                     action TEXT NOT NULL CHECK (
-                        action IN ('START_OBSERVING', 'HEARTBEAT', 'EXPIRE', 'REVOKE')
+                        action IN (
+                            'START_OBSERVING',
+                            'HEARTBEAT',
+                            'EXPIRE',
+                            'REVOKE'
+                        )
                     ),
                     reason_code TEXT NOT NULL,
                     from_state TEXT NOT NULL,
@@ -105,15 +116,31 @@ def setup_backtest_promotion_observation_tables(db) -> None:
             cursor.close()
 
 
-def _row_snapshot(row: Any) -> Optional[BacktestPromotionObservationRecord]:
+def _row_snapshot(
+    row: Any,
+    *,
+    replay: Optional[bool] = None,
+) -> Optional[BacktestPromotionObservationRecord]:
     if not row:
         return None
     mapping = dict(row) if not isinstance(row, dict) else row
     snapshot = _json_loads(mapping.get("result_snapshot"))
     if not snapshot:
         return None
-    snapshot["idempotent_replay"] = True
+    if replay is not None:
+        snapshot["idempotent_replay"] = replay
     return BacktestPromotionObservationRecord.model_validate(snapshot)
+
+
+def _select_observation(cursor, db, observation_id: str):
+    cursor.execute(
+        f"""
+        SELECT * FROM backtest_promotion_observations
+        WHERE observation_id = {db.param_style}
+        """,
+        (observation_id,),
+    )
+    return cursor.fetchone()
 
 
 def get_backtest_promotion_observation(
@@ -124,14 +151,10 @@ def get_backtest_promotion_observation(
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
         try:
-            cursor.execute(
-                f"""
-                SELECT * FROM backtest_promotion_observations
-                WHERE observation_id = {db.param_style}
-                """,
-                (observation_id,),
+            return _row_snapshot(
+                _select_observation(cursor, db, observation_id),
+                replay=True,
             )
-            return _row_snapshot(cursor.fetchone())
         finally:
             cursor.close()
 
@@ -162,9 +185,16 @@ def list_backtest_promotion_observations(
             cursor.close()
 
 
-def _observation_reason(body: ObserveBacktestPromotionBody, expires_at: Any) -> tuple[str, str, str]:
+def _observation_reason(
+    body: ObserveBacktestPromotionBody,
+    expires_at: Any,
+) -> tuple[ObservationAction, str, str]:
     if body.emergency_halt:
-        return "REVOKE", "emergency_halt", "Emergency halt was active during paper observation."
+        return (
+            "REVOKE",
+            "emergency_halt",
+            "Emergency halt was active during paper observation.",
+        )
     if body.duplicate_order_count > 0:
         return (
             "REVOKE",
@@ -182,7 +212,11 @@ def _observation_reason(body: ObserveBacktestPromotionBody, expires_at: Any) -> 
             "Paper broker and Database order state did not reconcile exactly.",
         )
     if body.strategy_drift:
-        return "REVOKE", "strategy_drift", "Observed strategy behavior drifted from approved evidence."
+        return (
+            "REVOKE",
+            "strategy_drift",
+            "Observed strategy behavior drifted from approved evidence.",
+        )
     if body.paper_drawdown_pct > _max_drawdown_pct():
         return (
             "REVOKE",
@@ -190,15 +224,24 @@ def _observation_reason(body: ObserveBacktestPromotionBody, expires_at: Any) -> 
             "Observed paper drawdown exceeded the configured promotion limit.",
         )
     parsed_expiry = _parse_datetime(expires_at)
-    if parsed_expiry is not None and body.observed_at.astimezone(timezone.utc) >= parsed_expiry:
-        return "EXPIRE", "promotion_expired", "Promotion evidence expired during paper observation."
+    observed_at = body.observed_at.astimezone(timezone.utc)
+    if parsed_expiry is not None and observed_at >= parsed_expiry:
+        return (
+            "EXPIRE",
+            "promotion_expired",
+            "Promotion evidence expired during paper observation.",
+        )
     if body.expected_state == "APPROVED_FOR_PAPER":
         return (
             "START_OBSERVING",
             "paper_observation_started",
             "First reconciled paper observation started the observation window.",
         )
-    return "HEARTBEAT", "paper_observation_heartbeat", "Paper observation heartbeat reconciled successfully."
+    return (
+        "HEARTBEAT",
+        "paper_observation_heartbeat",
+        "Paper observation heartbeat reconciled successfully.",
+    )
 
 
 def _record(
@@ -206,15 +249,14 @@ def _record(
     observation_id: str,
     promotion_id: str,
     body: ObserveBacktestPromotionBody,
-    action: str,
+    action: ObservationAction,
     reason_code: str,
-    from_state: str,
+    from_state: ObservedPromotionState,
     from_version: int,
     promotion: Dict[str, Any],
     correlation_id: Optional[str],
     replay: bool = False,
 ) -> BacktestPromotionObservationRecord:
-    created_at = _utc_now()
     return BacktestPromotionObservationRecord(
         observation_id=observation_id,
         promotion_id=promotion_id,
@@ -226,7 +268,7 @@ def _record(
         from_version=from_version,
         to_version=int(promotion["version"]),
         observed_at=body.observed_at,
-        created_at=created_at,
+        created_at=_utc_now(),
         correlation_id=correlation_id,
         paper_drawdown_pct=body.paper_drawdown_pct,
         reconciliation_ok=body.reconciliation_ok,
@@ -246,7 +288,10 @@ def _record(
     )
 
 
-def _persist_observation(db, record: BacktestPromotionObservationRecord) -> BacktestPromotionObservationRecord:
+def _persist_observation(
+    db,
+    record: BacktestPromotionObservationRecord,
+) -> BacktestPromotionObservationRecord:
     snapshot = record.model_dump(mode="json")
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
@@ -260,9 +305,7 @@ def _persist_observation(db, record: BacktestPromotionObservationRecord) -> Back
                     reconciliation_ok, duplicate_order_count, broker_order_count,
                     database_order_count, filled_order_count, strategy_drift,
                     emergency_halt, metadata, result_snapshot
-                ) VALUES (
-                    {', '.join([db.param_style] * 22)}
-                )
+                ) VALUES ({', '.join([db.param_style] * 22)})
                 ON CONFLICT (observation_id) DO NOTHING
                 """,
                 (
@@ -290,13 +333,24 @@ def _persist_observation(db, record: BacktestPromotionObservationRecord) -> Back
                     _json_dumps(snapshot),
                 ),
             )
+            inserted = cursor.rowcount == 1
             conn.commit()
+            if inserted:
+                return record
+            replay = _row_snapshot(
+                _select_observation(cursor, db, record.observation_id),
+                replay=True,
+            )
+            if replay is not None:
+                return replay
+            raise PromotionDatabaseConflict(
+                "observation id conflicted without a replayable ledger record"
+            )
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             cursor.close()
-    replay = get_backtest_promotion_observation(db, record.observation_id)
-    if replay is not None and replay.created_at != record.created_at:
-        return replay
-    return record
 
 
 def _heartbeat(
@@ -306,41 +360,51 @@ def _heartbeat(
     observation_id: str,
     correlation_id: Optional[str],
 ) -> BacktestPromotionObservationRecord:
-    now = _utc_now()
-    metadata = {
-        **promotion.metadata,
-        "last_observation_id": observation_id,
-        "last_observation_key": body.observation_key,
-        "last_reconciliation_ok": body.reconciliation_ok,
-        "last_paper_drawdown_pct": body.paper_drawdown_pct,
-    }
-    updated = promotion.model_copy(
-        update={
-            "version": promotion.version + 1,
-            "updated_at": now,
-            "last_observed_at": body.observed_at,
-            "reason_code": "paper_observation_heartbeat",
-            "reason": "Paper observation heartbeat reconciled successfully.",
-            "correlation_id": correlation_id,
-            "metadata": metadata,
-            "idempotent_replay": False,
-        }
-    )
-    record = _record(
-        observation_id=observation_id,
-        promotion_id=promotion.promotion_id,
-        body=body,
-        action="HEARTBEAT",
-        reason_code="paper_observation_heartbeat",
-        from_state=promotion.state,
-        from_version=promotion.version,
-        promotion=updated.model_dump(mode="json"),
-        correlation_id=correlation_id,
-    )
-    snapshot = record.model_dump(mode="json")
-    with db.connection_scope() as conn:
+    lock = _SQLITE_WRITE_LOCK if db.db_type == "sqlite" else nullcontext()
+    with lock, db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
         try:
+            replay = _row_snapshot(
+                _select_observation(cursor, db, observation_id),
+                replay=True,
+            )
+            if replay is not None:
+                return replay
+
+            now = _utc_now()
+            metadata = {
+                **promotion.metadata,
+                "last_observation_id": observation_id,
+                "last_observation_key": body.observation_key,
+                "last_reconciliation_ok": body.reconciliation_ok,
+                "last_paper_drawdown_pct": body.paper_drawdown_pct,
+            }
+            updated = promotion.model_copy(
+                update={
+                    "version": promotion.version + 1,
+                    "updated_at": now,
+                    "last_observed_at": body.observed_at,
+                    "reason_code": "paper_observation_heartbeat",
+                    "reason": (
+                        "Paper observation heartbeat reconciled successfully."
+                    ),
+                    "correlation_id": correlation_id,
+                    "metadata": metadata,
+                    "idempotent_replay": False,
+                }
+            )
+            record = _record(
+                observation_id=observation_id,
+                promotion_id=promotion.promotion_id,
+                body=body,
+                action="HEARTBEAT",
+                reason_code="paper_observation_heartbeat",
+                from_state=cast(ObservedPromotionState, promotion.state),
+                from_version=promotion.version,
+                promotion=updated.model_dump(mode="json"),
+                correlation_id=correlation_id,
+            )
+            snapshot = record.model_dump(mode="json")
             cursor.execute(
                 f"""
                 UPDATE backtest_promotions
@@ -369,6 +433,13 @@ def _heartbeat(
                 ),
             )
             if cursor.rowcount != 1:
+                conn.rollback()
+                replay = _row_snapshot(
+                    _select_observation(cursor, db, observation_id),
+                    replay=True,
+                )
+                if replay is not None:
+                    return replay
                 raise StalePromotionVersion(
                     "paper observation heartbeat lost optimistic concurrency race"
                 )
@@ -410,8 +481,35 @@ def _heartbeat(
             )
             conn.commit()
             return record
+        except Exception:
+            conn.rollback()
+            replay = _row_snapshot(
+                _select_observation(cursor, db, observation_id),
+                replay=True,
+            )
+            if replay is not None:
+                return replay
+            raise
         finally:
             cursor.close()
+
+
+def _validate_current_for_heartbeat(promotion, body: ObserveBacktestPromotionBody) -> None:
+    if promotion.state not in OBSERVABLE_STATES:
+        raise PromotionTerminalState(
+            f"promotion state {promotion.state} cannot be paper-observed"
+        )
+    if (
+        promotion.state != body.expected_state
+        or promotion.version != body.expected_version
+    ):
+        raise StalePromotionVersion(
+            "paper observation expected state/version does not match current promotion",
+            metadata={
+                "current_state": promotion.state,
+                "current_version": promotion.version,
+            },
+        )
 
 
 def observe_backtest_promotion(
@@ -436,22 +534,11 @@ def observe_backtest_promotion(
         raise PromotionValidationFailed("observed_at is too far in the future")
 
     promotion = get_backtest_promotion(db, promotion_id)
-    if promotion.state not in OBSERVABLE_STATES:
-        raise PromotionTerminalState(
-            f"promotion state {promotion.state} cannot be paper-observed"
-        )
-    if promotion.state != body.expected_state or promotion.version != body.expected_version:
-        raise StalePromotionVersion(
-            "paper observation expected state/version does not match current promotion",
-            metadata={
-                "current_state": promotion.state,
-                "current_version": promotion.version,
-            },
-        )
-
     action, reason_code, reason = _observation_reason(body, promotion.expires_at)
     effective_correlation_id = correlation_id or body.correlation_id
+
     if action == "HEARTBEAT":
+        _validate_current_for_heartbeat(promotion, body)
         return _heartbeat(
             db,
             promotion,
@@ -465,7 +552,7 @@ def observe_backtest_promotion(
             db,
             promotion_id,
             RevokeBacktestPromotionBody(
-                expected_version=promotion.version,
+                expected_version=body.expected_version,
                 reason_code=reason_code,
                 reason=reason,
                 correlation_id=effective_correlation_id,
@@ -479,8 +566,8 @@ def observe_backtest_promotion(
             db,
             promotion_id,
             TransitionBacktestPromotionBody(
-                expected_state=promotion.state,
-                expected_version=promotion.version,
+                expected_state=body.expected_state,
+                expected_version=body.expected_version,
                 next_state=next_state,
                 reason_code=reason_code,
                 reason=reason,
@@ -505,9 +592,10 @@ def observe_backtest_promotion(
         body=body,
         action=action,
         reason_code=reason_code,
-        from_state=promotion.state,
-        from_version=promotion.version,
+        from_state=body.expected_state,
+        from_version=body.expected_version,
         promotion=updated.model_dump(mode="json"),
         correlation_id=effective_correlation_id,
+        replay=updated.idempotent_replay,
     )
     return _persist_observation(db, record)
