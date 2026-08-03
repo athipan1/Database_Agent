@@ -136,7 +136,7 @@ def _row_snapshot(
 
 
 def _select_observation(cursor, db, observation_id: str):
-    cursor.execute(
+    cursor.execute(  # nosec B608 - only trusted adapter placeholder is interpolated
         f"""
         SELECT * FROM backtest_promotion_observations
         WHERE observation_id = {db.param_style}
@@ -170,7 +170,7 @@ def list_backtest_promotion_observations(
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
         try:
-            cursor.execute(
+            cursor.execute(  # nosec B608 - trusted adapter placeholder only
                 f"""
                 SELECT * FROM backtest_promotion_observations
                 WHERE promotion_id = {db.param_style}
@@ -299,7 +299,7 @@ def _persist_observation(
     with db.connection_scope() as conn:
         cursor = db.get_cursor(conn)
         try:
-            cursor.execute(
+            cursor.execute(  # nosec B608 - placeholders come from DB adapter only
                 f"""
                 INSERT INTO backtest_promotion_observations (
                     observation_id, promotion_id, observation_key, action,
@@ -408,7 +408,7 @@ def _heartbeat(
                 correlation_id=correlation_id,
             )
             snapshot = record.model_dump(mode="json")
-            cursor.execute(
+            cursor.execute(  # nosec B608 - values remain bound parameters
                 f"""
                 UPDATE backtest_promotions
                 SET version = {db.param_style},
@@ -446,7 +446,7 @@ def _heartbeat(
                 raise StalePromotionVersion(
                     "paper observation heartbeat lost optimistic concurrency race"
                 )
-            cursor.execute(
+            cursor.execute(  # nosec B608 - placeholders are adapter constants
                 f"""
                 INSERT INTO backtest_promotion_observations (
                     observation_id, promotion_id, observation_key, action,
