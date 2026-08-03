@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from pydantic import ValidationError
 
 import backtest_promotion_observation_service as service
 from backtest_promotion_base import (
@@ -112,15 +113,20 @@ def body(**updates):
 
 
 def update_promotion(db, promotion_id, *, state, version, correlation_id):
-    current = get_backtest_promotion(db, promotion_id)
     timestamp = NOW + timedelta(seconds=1)
     with db.connection_scope() as conn:
         conn.execute(
             """
             UPDATE backtest_promotions
             SET state = ?, version = ?, updated_at = ?,
-                paper_observing_at = CASE WHEN ? = 'PAPER_OBSERVING' THEN ? ELSE paper_observing_at END,
-                revoked_at = CASE WHEN ? = 'REVOKED' THEN ? ELSE revoked_at END,
+                paper_observing_at = CASE
+                    WHEN ? = 'PAPER_OBSERVING' THEN ?
+                    ELSE paper_observing_at
+                END,
+                revoked_at = CASE
+                    WHEN ? = 'REVOKED' THEN ?
+                    ELSE revoked_at
+                END,
                 reason_code = ?, reason = ?, correlation_id = ?
             WHERE promotion_id = ?
             """,
@@ -178,12 +184,25 @@ def fake_transitions(monkeypatch):
     return calls
 
 
-def test_first_healthy_observation_starts_observing_and_replays(db, fake_transitions):
+def test_first_healthy_observation_starts_observing_and_replays(
+    db,
+    fake_transitions,
+):
     insert_promotion(db)
     request = body()
 
-    first = service.observe_backtest_promotion(db, "promotion-1", request, "corr-1")
-    replay = service.observe_backtest_promotion(db, "promotion-1", request, "corr-1")
+    first = service.observe_backtest_promotion(
+        db,
+        "promotion-1",
+        request,
+        "corr-1",
+    )
+    replay = service.observe_backtest_promotion(
+        db,
+        "promotion-1",
+        request,
+        "corr-1",
+    )
 
     assert first.action == "START_OBSERVING"
     assert first.from_state == "APPROVED_FOR_PAPER"
@@ -194,7 +213,9 @@ def test_first_healthy_observation_starts_observing_and_replays(db, fake_transit
     assert replay.observation_id == first.observation_id
     assert replay.idempotent_replay is True
     assert len(fake_transitions["transition"]) == 1
-    assert len(service.list_backtest_promotion_observations(db, "promotion-1")) == 1
+    assert len(
+        service.list_backtest_promotion_observations(db, "promotion-1")
+    ) == 1
 
 
 def test_healthy_observing_heartbeat_updates_version_and_last_observed(db):
@@ -205,7 +226,12 @@ def test_healthy_observing_heartbeat_updates_version_and_last_observed(db):
         observation_key="heartbeat-001",
     )
 
-    result = service.observe_backtest_promotion(db, "promotion-1", request, "corr-1")
+    result = service.observe_backtest_promotion(
+        db,
+        "promotion-1",
+        request,
+        "corr-1",
+    )
     current = get_backtest_promotion(db, "promotion-1")
 
     assert result.action == "HEARTBEAT"
@@ -222,8 +248,14 @@ def test_healthy_observing_heartbeat_updates_version_and_last_observed(db):
         ({"emergency_halt": True}, "emergency_halt"),
         ({"duplicate_order_count": 1}, "duplicate_order_detected"),
         ({"reconciliation_ok": False}, "broker_reconciliation_failed"),
-        ({"broker_order_count": 2, "database_order_count": 1}, "broker_reconciliation_failed"),
-        ({"filled_order_count": 2, "broker_order_count": 1}, "broker_reconciliation_failed"),
+        (
+            {"broker_order_count": 2, "database_order_count": 1},
+            "broker_reconciliation_failed",
+        ),
+        (
+            {"filled_order_count": 2, "broker_order_count": 1},
+            "broker_reconciliation_failed",
+        ),
         ({"strategy_drift": True}, "strategy_drift"),
         ({"paper_drawdown_pct": 0.11}, "paper_drawdown_exceeded"),
     ],
@@ -263,7 +295,10 @@ def test_expired_observation_transitions_to_expired(db, fake_transitions):
     assert fake_transitions["transition"][0].next_state == "EXPIRED"
 
 
-def test_stale_terminal_and_future_observations_fail_closed(db, fake_transitions):
+def test_stale_terminal_and_future_observations_fail_closed(
+    db,
+    fake_transitions,
+):
     insert_promotion(db)
     with pytest.raises(StalePromotionVersion):
         service.observe_backtest_promotion(
@@ -284,7 +319,13 @@ def test_stale_terminal_and_future_observations_fail_closed(db, fake_transitions
             "corr-1",
         )
 
-    update_promotion(db, "promotion-1", state="REVOKED", version=6, correlation_id="corr-2")
+    update_promotion(
+        db,
+        "promotion-1",
+        state="REVOKED",
+        version=6,
+        correlation_id="corr-2",
+    )
     with pytest.raises(PromotionTerminalState):
         service.observe_backtest_promotion(
             db,
@@ -295,7 +336,7 @@ def test_stale_terminal_and_future_observations_fail_closed(db, fake_transitions
 
 
 def test_observation_key_and_timestamp_contracts_are_strict():
-    with pytest.raises(Exception, match="unsupported characters"):
+    with pytest.raises(ValidationError, match="unsupported characters"):
         body(observation_key="bad key")
-    with pytest.raises(Exception, match="timezone"):
+    with pytest.raises(ValidationError, match="timezone"):
         body(observed_at=datetime(2026, 8, 3, 5, 0))
