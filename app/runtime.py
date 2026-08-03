@@ -1,13 +1,13 @@
 """Patch-compatible runtime dependencies for the Database Agent API.
 
-The module is deliberately free of FastAPI route declarations.  It exposes the
+The module is deliberately free of FastAPI route declarations. It exposes the
 objects and helper functions consumed by router factories, startup orchestration,
 and existing tests that patch attributes through ``main``.
 """
 
 from __future__ import annotations
 
-import os
+import logging
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Union
 
@@ -29,6 +29,10 @@ from app.services.market_data import (
     build_mock_price_history,
     ingest_data_for_symbol_timeframe as ingest_market_data,
     run_ingestion_job as run_market_data_ingestion,
+)
+from app.services.market_data_client import (
+    create_optional_market_data_client,
+    require_market_data_client,
 )
 from app.services.scheduler import RuntimeScheduler
 from app.startup import (
@@ -132,9 +136,9 @@ get_api_key = create_api_key_dependency(current_settings)
 configure_logging(correlation_id_var)
 
 db = create_trading_db(current_settings())
-alpaca_client = AlpacaClient(
-    api_key=ALPACA_API_KEY,
-    secret_key=ALPACA_SECRET_KEY,
+alpaca_client: Optional[AlpacaClient] = create_optional_market_data_client(
+    ALPACA_API_KEY,
+    ALPACA_SECRET_KEY,
 )
 runtime_scheduler = RuntimeScheduler()
 app = None
@@ -189,9 +193,10 @@ def ingest_data_for_symbol_timeframe(
     start_date: str,
     end_date: str,
 ) -> None:
+    client = require_market_data_client(alpaca_client)
     ingest_market_data(
         db,
-        alpaca_client,
+        client,
         symbol,
         timeframe,
         start_date,
@@ -200,6 +205,12 @@ def ingest_data_for_symbol_timeframe(
 
 
 def run_ingestion_job() -> None:
+    if alpaca_client is None:
+        logging.warning(
+            "Scheduled historical-data ingestion was skipped because optional Alpaca data credentials are not configured.",
+            extra={"event": "market_data_ingestion_skipped", "reason": "client_disabled"},
+        )
+        return
     run_market_data_ingestion(db, alpaca_client)
 
 
