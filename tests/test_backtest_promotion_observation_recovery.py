@@ -312,6 +312,7 @@ def test_heartbeat_replays_existing_ledger_without_version_increment():
 def test_heartbeat_lost_compare_and_swap_fails_stale():
     db = SQLiteDB()
     _insert_promotion(db, state="PAPER_OBSERVING", version=6)
+    service.setup_backtest_promotion_observation_tables(db)
     stale = get_backtest_promotion(db, "promotion-recovery")
     with db.connection_scope() as conn:
         conn.execute(
