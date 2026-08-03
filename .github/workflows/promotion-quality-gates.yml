@@ -1,0 +1,282 @@
+name: Promotion Quality Gates
+
+on:
+  pull_request:
+    paths:
+      - "backtest_json_contract.py"
+      - "backtest_promotion_*.py"
+      - "app/core/security.py"
+      - "tests/test_backtest_json_contract.py"
+      - "tests/test_backtest_promotion_*.py"
+      - "migrations/003_backtest_promotion_lifecycle.*.sql"
+      - "requirements*.txt"
+      - "pyproject.toml"
+      - "Dockerfile"
+      - ".github/workflows/promotion-quality-gates.yml"
+  push:
+    branches: [main]
+    paths:
+      - "backtest_json_contract.py"
+      - "backtest_promotion_*.py"
+      - "app/core/security.py"
+      - "tests/test_backtest_json_contract.py"
+      - "tests/test_backtest_promotion_*.py"
+      - "migrations/003_backtest_promotion_lifecycle.*.sql"
+      - "requirements*.txt"
+      - "pyproject.toml"
+      - "Dockerfile"
+      - ".github/workflows/promotion-quality-gates.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promotion-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  quality-security-contract:
+    name: Ruff MyPy Coverage Audit OpenAPI SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install production and quality dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Ruff promotion code and tests
+        run: |
+          ruff check \
+            backtest_json_contract.py \
+            backtest_promotion_*.py \
+            app/core/security.py \
+            tests/test_backtest_json_contract.py \
+            tests/test_backtest_promotion_*.py
+
+      - name: MyPy promotion contracts
+        run: |
+          mypy \
+            backtest_json_contract.py \
+            backtest_promotion_models.py \
+            backtest_promotion_exact_lookup.py \
+            backtest_promotion_concurrency.py \
+            app/core/security.py
+
+      - name: Promotion branch coverage and OpenAPI contract
+        env:
+          USE_SQLITE: "1"
+          DATABASE_DEV_MODE: "true"
+          DATABASE_AGENT_API_KEY: promotion-ci-key
+          BACKTEST_PROMOTION_APPROVAL_TOKEN: promotion-approval-ci-key
+        run: |
+          pytest -q \
+            tests/test_backtest_json_contract.py \
+            tests/test_backtest_promotion_authorization.py \
+            tests/test_backtest_promotion_concurrency_recovery.py \
+            tests/test_backtest_promotion_exact_lookup.py \
+            tests/test_backtest_promotion_lifecycle.py \
+            tests/test_backtest_promotion_openapi_contract.py \
+            --cov \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage-promotion.xml \
+            --cov-fail-under=90
+
+      - name: Bandit targeted security scan
+        run: |
+          bandit -q -r \
+            backtest_json_contract.py \
+            backtest_promotion_models.py \
+            backtest_promotion_routes.py \
+            backtest_promotion_concurrency.py \
+            app/core/security.py
+
+      - name: Python dependency vulnerability audit
+        run: pip-audit --strict --desc
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          cyclonedx-py environment \
+            --output-format JSON \
+            --output-file sbom-promotion.cdx.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("sbom-promotion.cdx.json")
+          document = json.loads(path.read_text(encoding="utf-8"))
+          assert document.get("bomFormat") == "CycloneDX"
+          assert document.get("components"), "SBOM must contain resolved components"
+          print(f"SBOM components: {len(document['components'])}")
+          PY
+
+      - name: Upload coverage and SBOM evidence
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: promotion-quality-evidence-${{ github.sha }}
+          path: |
+            coverage-promotion.xml
+            sbom-promotion.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  postgres-concurrency-migrations:
+    name: PostgreSQL Concurrency Migration Round Trip
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_USER: promotion_ci
+          POSTGRES_PASSWORD: promotion_ci_password
+          POSTGRES_DB: promotion_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U promotion_ci -d promotion_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: promotion_ci
+      POSTGRES_PASSWORD: promotion_ci_password
+      POSTGRES_DB: promotion_ci
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: "6379"
+      DATABASE_PROVIDER: postgres
+      DATABASE_AGENT_API_KEY: promotion-ci-key
+      DATABASE_REQUIRE_SCHEMA_IDENTITY: "false"
+      BACKTEST_PROMOTION_AUTO_APPROVE_PAPER: "false"
+      BACKTEST_PROMOTION_APPROVAL_REQUIRED: "true"
+      BACKTEST_PROMOTION_APPROVAL_TOKEN: promotion-approval-ci-key
+
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run migration and real concurrency tests
+        run: |
+          pytest -q \
+            tests/test_backtest_promotion_migration_postgres.py \
+            tests/test_backtest_promotion_postgres_concurrency.py
+
+  production-container:
+    name: Non Root Container Health
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_USER: promotion_ci
+          POSTGRES_PASSWORD: promotion_ci_password
+          POSTGRES_DB: promotion_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U promotion_ci -d promotion_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Build production image
+        run: docker build --pull --tag database-agent:promotion-ci .
+
+      - name: Verify non-root image contract
+        run: |
+          test "$(docker image inspect database-agent:promotion-ci --format '{{.Config.User}}')" = "app"
+          test -n "$(docker image inspect database-agent:promotion-ci --format '{{json .Config.Healthcheck.Test}}')"
+
+      - name: Run container and require healthy readiness
+        run: |
+          docker run --detach --rm \
+            --name database-agent-promotion-ci \
+            --network host \
+            --env POSTGRES_HOST=127.0.0.1 \
+            --env POSTGRES_PORT=5432 \
+            --env POSTGRES_USER=promotion_ci \
+            --env POSTGRES_PASSWORD=promotion_ci_password \
+            --env POSTGRES_DB=promotion_ci \
+            --env REDIS_HOST=127.0.0.1 \
+            --env REDIS_PORT=6379 \
+            --env DATABASE_PROVIDER=postgres \
+            --env DATABASE_AGENT_API_KEY=promotion-ci-key \
+            --env DATABASE_REQUIRE_SCHEMA_IDENTITY=false \
+            --env DATABASE_CUTOVER_GUARD_ENABLED=false \
+            --env TRADING_MODE=PAPER \
+            database-agent:promotion-ci
+
+          trap 'docker logs database-agent-promotion-ci || true; docker stop database-agent-promotion-ci || true' EXIT
+          for attempt in $(seq 1 60); do
+            status="$(docker inspect database-agent-promotion-ci --format '{{.State.Health.Status}}')"
+            if [ "$status" = "healthy" ]; then
+              curl --fail --silent http://127.0.0.1:8004/health >/dev/null
+              curl --fail --silent http://127.0.0.1:8004/ready >/dev/null
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              docker logs database-agent-promotion-ci
+              exit 1
+            fi
+            sleep 2
+          done
+          docker logs database-agent-promotion-ci
+          exit 1
