@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 import main as main_module
 from backtest_promotion_observation_routes import (
     create_backtest_promotion_observation_routes,
+    install_backtest_promotion_observation_openapi,
 )
 from backtest_promotion_observation_service import (
     setup_backtest_promotion_observation_tables,
@@ -79,6 +80,7 @@ _mount_missing_routes(
         get_correlation_id,
     ),
 )
+install_backtest_promotion_observation_openapi(app)
 
 
 _base_lifespan = app.router.lifespan_context
