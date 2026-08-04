@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from contextlib import nullcontext
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from backtest_promotion_models import (
@@ -50,6 +50,19 @@ from backtest_promotion_base import (
 )
 from backtest_promotion_store import get_backtest_promotion
 from backtest_promotion_validation import _validate_transition_evidence
+
+
+def _approved_for_paper_expiry(
+    *,
+    current_expires_at: Optional[datetime],
+    approved_at: datetime,
+) -> datetime:
+    policy_expiry = approved_at + timedelta(
+        hours=_env_int("BACKTEST_PROMOTION_MAX_AGE_HOURS", 168)
+    )
+    if current_expires_at is None:
+        return policy_expiry
+    return min(current_expires_at, policy_expiry)
 
 
 def transition_backtest_promotion(
@@ -167,9 +180,9 @@ def transition_backtest_promotion(
                 params.append(
                     _db_time(
                         db,
-                        now
-                        + timedelta(
-                            hours=_env_int("BACKTEST_PROMOTION_MAX_AGE_HOURS", 168)
+                        _approved_for_paper_expiry(
+                            current_expires_at=current.expires_at,
+                            approved_at=now,
                         ),
                     )
                 )
