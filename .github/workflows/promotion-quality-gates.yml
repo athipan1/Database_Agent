@@ -90,6 +90,7 @@ jobs:
         run: |
           pytest -q \
             tests/test_backtest_json_contract.py \
+            tests/test_backtest_promotion_approval_expiry.py \
             tests/test_backtest_promotion_authorization.py \
             tests/test_backtest_promotion_concurrency_recovery.py \
             tests/test_backtest_promotion_exact_lookup.py \
@@ -258,31 +259,17 @@ jobs:
             --env POSTGRES_DB=promotion_ci \
             --env REDIS_HOST=127.0.0.1 \
             --env REDIS_PORT=6379 \
-            --env DATABASE_PROVIDER=postgres \
             --env DATABASE_AGENT_API_KEY=promotion-ci-key \
+            --env BACKTEST_PROMOTION_APPROVAL_TOKEN=promotion-approval-ci-key \
             --env DATABASE_REQUIRE_SCHEMA_IDENTITY=false \
-            --env DATABASE_CUTOVER_GUARD_ENABLED=false \
-            --env TRADING_MODE=PAPER \
+            --publish 8004:8004 \
             database-agent:promotion-ci
 
-          cleanup() {
-            docker logs database-agent-promotion-ci || true
-            docker rm --force database-agent-promotion-ci || true
-          }
-          trap cleanup EXIT
-
           for attempt in $(seq 1 60); do
-            running="$(docker inspect database-agent-promotion-ci --format '{{.State.Running}}')"
-            if [ "$running" != "true" ]; then
-              docker inspect database-agent-promotion-ci --format 'exit={{.State.ExitCode}} error={{.State.Error}}'
-              docker logs database-agent-promotion-ci
-              exit 1
-            fi
-
-            status="$(docker inspect database-agent-promotion-ci --format '{{.State.Health.Status}}')"
+            status=$(docker inspect database-agent-promotion-ci --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}')
+            echo "health attempt ${attempt}: ${status}"
             if [ "$status" = "healthy" ]; then
-              curl --fail --silent http://127.0.0.1:8004/health >/dev/null
-              curl --fail --silent http://127.0.0.1:8004/ready >/dev/null
+              curl --fail --silent --show-error http://127.0.0.1:8004/health
               exit 0
             fi
             if [ "$status" = "unhealthy" ]; then
@@ -291,5 +278,6 @@ jobs:
             fi
             sleep 2
           done
+
           docker logs database-agent-promotion-ci
           exit 1
