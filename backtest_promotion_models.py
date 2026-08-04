@@ -251,5 +251,3 @@ class BacktestPromotionTransitionRecord(StrictPromotionModel):
     evidence_run_id: str
     correlation_id: Optional[str] = None
     created_at: datetime
-    result_snapshot: Dict[str, Any]
-    idempotent_replay: bool = False
