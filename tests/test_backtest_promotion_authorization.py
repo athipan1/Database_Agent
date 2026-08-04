@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -75,6 +76,38 @@ def test_metadata_accepts_finite_nested_json_and_preserves_shape():
     model = CreateBacktestPromotionBody.model_validate(payload)
     assert model.metadata["finite"] == 1.25
     assert model.metadata["list"][3] == {"nested": "value"}
+
+
+def test_create_contract_accepts_timezone_aware_iso_expiry_from_json():
+    payload = _create_payload()
+    payload["expires_at"] = "2026-08-04T00:00:03Z"
+
+    model = CreateBacktestPromotionBody.model_validate_json(json.dumps(payload))
+
+    assert model.expires_at == datetime(
+        2026,
+        8,
+        4,
+        0,
+        0,
+        3,
+        tzinfo=timezone.utc,
+    )
+
+
+@pytest.mark.parametrize(
+    ("expires_at", "message"),
+    [
+        ("not-a-date", "ISO-8601"),
+        ("2026-08-04T00:00:03", "include a timezone"),
+    ],
+)
+def test_create_contract_rejects_invalid_json_expiry(expires_at, message):
+    payload = _create_payload()
+    payload["expires_at"] = expires_at
+
+    with pytest.raises(ValidationError, match=message):
+        CreateBacktestPromotionBody.model_validate_json(json.dumps(payload))
 
 
 @pytest.mark.parametrize(
