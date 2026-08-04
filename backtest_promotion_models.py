@@ -131,6 +131,19 @@ class CreateBacktestPromotionBody(StrictPromotionModel):
             raise ValueError("dataset_fingerprint must be a hexadecimal digest")
         return normalized
 
+    @field_validator("expires_at", mode="before")
+    @classmethod
+    def parse_expires_at(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized.endswith("Z"):
+                normalized = f"{normalized[:-1]}+00:00"
+            try:
+                return datetime.fromisoformat(normalized)
+            except ValueError as exc:
+                raise ValueError("expires_at must be ISO-8601") from exc
+        return value
+
     @field_validator("expires_at")
     @classmethod
     def validate_expires_at(cls, value: Optional[datetime]) -> Optional[datetime]:
@@ -238,3 +251,5 @@ class BacktestPromotionTransitionRecord(StrictPromotionModel):
     evidence_run_id: str
     correlation_id: Optional[str] = None
     created_at: datetime
+    result_snapshot: Dict[str, Any]
+    idempotent_replay: bool = False
