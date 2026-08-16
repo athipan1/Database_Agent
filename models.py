@@ -422,6 +422,11 @@ class SessionRiskSnapshot(CustomBaseModel):
     minutes_since_last_symbol_trade: Optional[float] = None
     emergency_halt: bool = False
     source: str = "database_agent"
+    system_provenance_verified: bool = False
+    system_managed_trades_today: int = 0
+    system_unverified_trades_today: int = 0
+    system_managed_realized_pnl: float = 0.0
+    system_provenance_source: str = "unavailable"
     generated_at: Optional[datetime.datetime] = None
 
 
