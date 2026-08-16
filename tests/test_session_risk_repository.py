@@ -173,13 +173,17 @@ def test_sql_provenance_query_preserves_string_account_id():
 
         def execute(self, sql, params):
             self.params = params
+            assert "AS execution_status" in sql
+            assert "AS approval_status" in sql
 
         def fetchone(self):
             return {
-                "trade_id": "trade-uuid",
-                "correlation_id": "corr-uuid",
-                "status": "succeeded",
-                "order_id": 31,
+                "order_trade_id": "trade-uuid",
+                "order_correlation_id": "corr-uuid",
+                "execution_status": "succeeded",
+                "execution_trade_id": "trade-uuid",
+                "approval_status": "used",
+                "approval_order_id": 31,
             }
 
         def close(self):
