@@ -167,7 +167,6 @@ def _minutes_since(timestamp: Optional[datetime], now: datetime) -> Optional[flo
 
 def _safe_rows_from(db, method_name: str, *args, **kwargs) -> list[Any]:
     if method_name == "get_fills":
-        # Test doubles and future DB wrappers can expose get_fills directly.
         direct = getattr(db, "get_fills", None)
         if callable(direct):
             try:
@@ -200,7 +199,11 @@ def _row_value(row: Any, key: str, index: int) -> Any:
             return None
 
 
-def _verify_system_managed_fill(db, account_id: Union[int, str], fill: Dict[str, Any]) -> bool:
+def _verify_system_managed_fill(
+    db,
+    account_id: Union[int, str],
+    fill: Dict[str, Any],
+) -> bool:
     """Verify fill provenance through the persisted execution safety chain.
 
     A fill is considered system-managed only when it can be linked to a normal
@@ -248,7 +251,7 @@ def _verify_system_managed_fill(db, account_id: Union[int, str], fill: Dict[str,
                       AND ra.status = 'used'
                     LIMIT 1
                     """,
-                    (int(order_id), int(account_id), trade_id, trade_id),
+                    (int(order_id), str(account_id), trade_id, trade_id),
                 )
                 row = cursor.fetchone()
             finally:
@@ -299,8 +302,6 @@ def _system_provenance_summary(
         if _verify_system_managed_fill(db, account_id, row)
     ]
     unverified_count = max(0, len(daily_rows) - len(managed_rows))
-    # Require complete provenance for the day's recorded fills before downstream
-    # reporting may call the broker day P&L AI-system profit.
     complete = bool(daily_rows) and unverified_count == 0
     return {
         "system_provenance_verified": complete,
