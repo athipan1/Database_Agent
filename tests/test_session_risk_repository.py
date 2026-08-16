@@ -1,6 +1,9 @@
 from datetime import datetime, timezone, timedelta
 
-from session_risk_repository import build_session_risk_snapshot
+from session_risk_repository import (
+    _verify_system_managed_fill,
+    build_session_risk_snapshot,
+)
 
 
 class FakeDB:
@@ -161,3 +164,55 @@ def test_one_unverified_fill_makes_daily_system_provenance_fail_closed():
     assert snapshot["system_managed_trades_today"] == 1
     assert snapshot["system_unverified_trades_today"] == 1
     assert snapshot["system_provenance_verified"] is False
+
+
+def test_sql_provenance_query_preserves_string_account_id():
+    class Cursor:
+        def __init__(self):
+            self.params = None
+
+        def execute(self, sql, params):
+            self.params = params
+
+        def fetchone(self):
+            return {
+                "trade_id": "trade-uuid",
+                "correlation_id": "corr-uuid",
+                "status": "succeeded",
+                "order_id": 31,
+            }
+
+        def close(self):
+            pass
+
+    class Scope:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def __enter__(self):
+            return self.conn
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class SQLDB:
+        param_style = "%s"
+
+        def __init__(self):
+            self.cursor = Cursor()
+
+        def connection_scope(self):
+            return Scope(object())
+
+        def get_cursor(self, conn):
+            return self.cursor
+
+    db = SQLDB()
+    fill = {
+        "order_id": 31,
+        "trade_id": "trade-uuid",
+        "correlation_id": "corr-uuid",
+    }
+
+    assert _verify_system_managed_fill(db, "acct-uuid-123", fill) is True
+    assert db.cursor.params == (31, "acct-uuid-123", "trade-uuid", "trade-uuid")
