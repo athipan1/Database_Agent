@@ -238,8 +238,12 @@ def _verify_system_managed_fill(
                 p = db.param_style
                 cursor.execute(
                     f"""
-                    SELECT o.trade_id, o.correlation_id, ej.status, ej.trade_id,
-                           ra.status, ra.order_id
+                    SELECT o.trade_id AS order_trade_id,
+                           o.correlation_id AS order_correlation_id,
+                           ej.status AS execution_status,
+                           ej.trade_id AS execution_trade_id,
+                           ra.status AS approval_status,
+                           ra.order_id AS approval_order_id
                     FROM orders o
                     JOIN execution_jobs ej ON ej.order_id = o.order_id
                     JOIN risk_approvals ra ON ra.order_id = o.order_id
@@ -261,12 +265,22 @@ def _verify_system_managed_fill(
 
     if not row:
         return False
-    order_trade_id = str(_row_value(row, "trade_id", 0) or "").strip()
-    order_correlation_id = str(_row_value(row, "correlation_id", 1) or "").strip()
-    execution_status = str(_row_value(row, "status", 2) or "").lower()
-    execution_trade_id = str(_row_value(row, "trade_id", 3) or "").strip()
-    approval_status = str(_row_value(row, "status", 4) or "").lower()
-    approval_order_id = _row_value(row, "order_id", 5)
+    order_trade_id = str(
+        _row_value(row, "order_trade_id", 0) or ""
+    ).strip()
+    order_correlation_id = str(
+        _row_value(row, "order_correlation_id", 1) or ""
+    ).strip()
+    execution_status = str(
+        _row_value(row, "execution_status", 2) or ""
+    ).lower()
+    execution_trade_id = str(
+        _row_value(row, "execution_trade_id", 3) or ""
+    ).strip()
+    approval_status = str(
+        _row_value(row, "approval_status", 4) or ""
+    ).lower()
+    approval_order_id = _row_value(row, "approval_order_id", 5)
 
     return bool(
         order_trade_id == trade_id
