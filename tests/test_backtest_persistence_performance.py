@@ -7,6 +7,7 @@ import backtest_routes
 import backtest_write_repository as write_repository
 from backtest_models import BacktestEquityPoint
 from tests.test_backtest_endpoints import HEADERS, _build_client
+from trading_db import TradingDB
 
 
 class _PostgresLikeDB:
@@ -91,7 +92,19 @@ def test_backtest_routes_do_not_run_schema_ddl_per_request(monkeypatch):
 
 
 def test_backtest_database_handlers_are_sync_for_fastapi_threadpool():
-    client = _build_client()
+    db = TradingDB()
+
+    def get_api_key(api_key):
+        return api_key
+
+    async def get_correlation_id():
+        return "corr-backtest"
+
+    router = backtest_routes.create_backtest_routes(
+        db,
+        get_api_key,
+        get_correlation_id,
+    )
     paths = {
         "/market-data/bars",
         "/backtests/runs",
@@ -100,11 +113,8 @@ def test_backtest_database_handlers_are_sync_for_fastapi_threadpool():
         "/skills/{skill_id}/backtests",
         "/skills/{skill_id}/backtest-status",
     }
-
     matching_routes = [
-        route
-        for route in client.app.routes
-        if getattr(route, "path", None) in paths
+        route for route in router.routes if getattr(route, "path", None) in paths
     ]
 
     assert matching_routes
