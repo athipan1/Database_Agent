@@ -43,6 +43,7 @@ jobs:
         run: |
           bash -n scripts/migrate_postgres_to_supabase.sh
           python -m py_compile \
+            scripts/apply_runtime_migrations.py \
             scripts/compare_primary_counts.py \
             scripts/database_primary_api_smoke.py \
             scripts/smoke_supabase_primary.py \
@@ -60,7 +61,7 @@ jobs:
           DATABASE_DEV_MODE: 'true'
         run: python -m pytest
 
-      - name: Verify guarded local readiness contract
+      - name: Apply migrations and verify guarded local readiness contract
         env:
           DATABASE_PROVIDER: postgres
           DATABASE_URL: postgresql://trading_user:cutover_test_password@localhost:5432/trading_db_test
@@ -74,17 +75,16 @@ jobs:
           TRADING_MODE: PAPER
           REDIS_HOST: localhost
         run: |
+          python -m scripts.apply_runtime_migrations
           python - <<'PY'
           from app.core.config import Settings
           from app.services.database_provider import create_trading_db
           from app.services.database_readiness import inspect_database_readiness
-          from app.startup import setup_runtime_tables
 
           settings = Settings.from_environ()
           settings.validate()
           database = create_trading_db(settings)
           try:
-              setup_runtime_tables(database)
               report = inspect_database_readiness(database, settings)
               assert report['ready'] is True, report
               assert report['provider'] == 'postgres'
