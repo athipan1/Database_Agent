@@ -1,0 +1,232 @@
+name: Backtest Persistence Supabase E2E Probe
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    environment: supabase-primary-cutover
+    timeout-minutes: 15
+    env:
+      DATABASE_PROVIDER: supabase
+      DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+      DATABASE_SSL_MODE: require
+      DATABASE_CREATE_IF_MISSING: 'false'
+      DATABASE_AGENT_API_KEY: pr125-local-e2e-key
+      DATABASE_DEV_MODE: 'false'
+      DATABASE_POOL_MIN: '1'
+      DATABASE_POOL_MAX: '5'
+      TRADING_MODE: PAPER
+      REDIS_HOST: localhost
+      RUN_ID: pr125-backtest-perf-${{ github.run_id }}
+
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Validate Supabase secret
+        run: test -n "$DATABASE_URL"
+
+      - name: Start branch API against Supabase
+        run: |
+          python -m uvicorn main:app --host 127.0.0.1 --port 8004 > /tmp/database-agent-pr125.log 2>&1 &
+          echo $! > /tmp/database-agent-pr125.pid
+          for attempt in $(seq 1 90); do
+            if curl --silent --fail http://127.0.0.1:8004/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/database-agent-pr125.log
+          exit 1
+
+      - name: POST 43 trades and 1001 equity points then exact GET
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import time
+          import urllib.request
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+
+          base_url = 'http://127.0.0.1:8004'
+          run_id = os.environ['RUN_ID']
+          headers = {
+              'Content-Type': 'application/json',
+              'X-API-KEY': os.environ['DATABASE_AGENT_API_KEY'],
+              'X-Correlation-ID': f'{run_id}-corr',
+          }
+          start = datetime(2023, 1, 1, tzinfo=timezone.utc)
+
+          trades = []
+          for index in range(43):
+              entry = start + timedelta(days=index * 10)
+              trades.append({
+                  'trade_id': f'{run_id}-trade-{index}',
+                  'symbol': 'META',
+                  'side': 'buy',
+                  'quantity': 1,
+                  'entry_time': entry.isoformat(),
+                  'entry_price': 100 + index,
+                  'exit_time': (entry + timedelta(days=2)).isoformat(),
+                  'exit_price': 101 + index,
+                  'realized_pl': 1,
+                  'realized_pl_pct': 0.01,
+                  'fees': 0,
+                  'outcome': 'win',
+                  'metadata': {'probe': True, 'index': index},
+              })
+
+          equity_curve = []
+          for index in range(1001):
+              equity_curve.append({
+                  'point_id': f'{run_id}-point-{index}',
+                  'timestamp': (start + timedelta(days=index)).isoformat(),
+                  'equity': 100000 + index,
+                  'drawdown': 0,
+                  'metadata': {'probe': True, 'index': index},
+              })
+
+          payload = {
+              'run_id': run_id,
+              'account_id': '1',
+              'skill_id': 'hourly-backtest-storage-e2e',
+              'strategy_id': 'breakout-balanced-v1',
+              'symbol': 'META',
+              'timeframe': '1d',
+              'start_time': start.isoformat(),
+              'end_time': (start + timedelta(days=1000)).isoformat(),
+              'status': 'completed',
+              'engine_version': 'pr125-performance-probe',
+              'parameters': {'storage_only': True},
+              'metrics': {
+                  'win_rate': 0.55,
+                  'profit_factor': 1.45,
+                  'expectancy': 0.25,
+                  'max_drawdown': 0.12,
+                  'total_trades': 43,
+              },
+              'metadata': {
+                  'storage_only': True,
+                  'safe_for_trading': False,
+                  'promotion_created': False,
+                  'performance_probe': 'pr125',
+              },
+              'trades': trades,
+              'equity_curve': equity_curve,
+          }
+
+          def call(method: str, url: str, body=None):
+              data = None if body is None else json.dumps(body).encode('utf-8')
+              request = urllib.request.Request(
+                  url,
+                  data=data,
+                  method=method,
+                  headers=headers,
+              )
+              started = time.perf_counter()
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  content = json.loads(response.read().decode('utf-8'))
+                  elapsed = time.perf_counter() - started
+                  return response.status, elapsed, content
+
+          post_status, post_seconds, post_body = call(
+              'POST', f'{base_url}/backtests/runs', payload
+          )
+          if post_status != 200 or post_body.get('status') != 'success':
+              raise SystemExit(f'POST failed: HTTP {post_status}: {post_body}')
+
+          get_status, get_seconds, get_body = call(
+              'GET', f'{base_url}/backtests/runs/{run_id}'
+          )
+          if get_status != 200 or get_body.get('status') != 'success':
+              raise SystemExit(f'GET failed: HTTP {get_status}: {get_body}')
+
+          data = get_body.get('data') or {}
+          run = data.get('run') or {}
+          if run.get('run_id') != run_id:
+              raise SystemExit(f'run_id mismatch: {run.get("run_id")} != {run_id}')
+          if run.get('symbol') != 'META' or run.get('strategy_id') != 'breakout-balanced-v1':
+              raise SystemExit(f'identity mismatch: {run}')
+          if len(data.get('trades') or []) != 43:
+              raise SystemExit('trade count mismatch')
+          if len(data.get('equity_curve') or []) != 1001:
+              raise SystemExit('equity point count mismatch')
+
+          evidence = {
+              'status': 'success',
+              'database': 'supabase',
+              'run_id': run_id,
+              'trade_count': 43,
+              'equity_point_count': 1001,
+              'post_http_status': post_status,
+              'get_http_status': get_status,
+              'post_seconds': round(post_seconds, 4),
+              'get_seconds': round(get_seconds, 4),
+              'total_seconds': round(post_seconds + get_seconds, 4),
+              'exact_identity_match': True,
+              'safe_for_trading': False,
+          }
+          Path('backtest-persistence-performance.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+
+          if post_seconds >= 5.0:
+              raise SystemExit(f'POST latency target missed: {post_seconds:.3f}s >= 5s')
+          if get_seconds >= 5.0:
+              raise SystemExit(f'GET latency target missed: {get_seconds:.3f}s >= 5s')
+          PY
+
+      - name: Clean probe rows from Supabase
+        if: always()
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          run_id = os.environ['RUN_ID']
+          with psycopg2.connect(os.environ['DATABASE_URL'], sslmode='require') as conn:
+              with conn.cursor() as cursor:
+                  cursor.execute('DELETE FROM skill_backtest_results WHERE run_id = %s', (run_id,))
+                  cursor.execute('DELETE FROM backtest_equity_curve WHERE run_id = %s', (run_id,))
+                  cursor.execute('DELETE FROM backtest_trades WHERE run_id = %s', (run_id,))
+                  cursor.execute('DELETE FROM backtest_runs WHERE run_id = %s', (run_id,))
+          print(f'Cleaned performance probe {run_id}')
+          PY
+
+      - name: Stop branch API
+        if: always()
+        run: |
+          if [[ -f /tmp/database-agent-pr125.pid ]]; then
+            kill "$(cat /tmp/database-agent-pr125.pid)" || true
+          fi
+          tail -n 100 /tmp/database-agent-pr125.log || true
+
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-persistence-performance-${{ github.run_id }}
+          path: backtest-persistence-performance.json
+          if-no-files-found: warn
+          retention-days: 30
