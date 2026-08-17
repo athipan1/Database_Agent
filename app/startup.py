@@ -76,7 +76,6 @@ async def startup_runtime(runtime) -> None:
         )
         runtime.runtime_scheduler.configure(
             ingestion_job=runtime.run_ingestion_job,
-            partition_job=runtime.db.ensure_price_partitions,
             stats_job=runtime.log_database_stats,
         )
         runtime.runtime_scheduler.start()
