@@ -8,7 +8,6 @@ from fastapi.security import APIKeyHeader
 
 from backtest_models import CreateBacktestRunBody, UpsertMarketDataBarsBody
 from backtest_repository import (
-    create_backtest_run_detail,
     get_backtest_run_detail,
     get_latest_exact_backtest_run_detail,
     get_skill_backtest_status,
@@ -17,6 +16,7 @@ from backtest_repository import (
     setup_backtest_tables,
     upsert_market_data_bars,
 )
+from backtest_write_repository import create_backtest_run_detail
 
 
 def wrap_response(
@@ -44,23 +44,25 @@ def create_backtest_routes(db, get_api_key_dependency, get_correlation_id_depend
     router = APIRouter(tags=["backtests"])
     api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
+    # Production schema setup is owned by app.startup.setup_runtime_tables().
+    # Unit tests use an in-memory SQLite DB without the application lifespan, so
+    # initialize that disposable schema once when the router is constructed.
+    if db.db_type == "sqlite":
+        setup_backtest_tables(db)
+
     async def _api_key(api_key_header_value: str = Security(api_key_header)):
         return get_api_key_dependency(api_key_header_value)
 
     async def _correlation_id():
         return await get_correlation_id_dependency()
 
-    def _ensure_tables_ready() -> None:
-        setup_backtest_tables(db)
-
     @router.post("/market-data/bars", response_model=dict)
-    async def upsert_market_data_bars_endpoint(
+    def upsert_market_data_bars_endpoint(
         body: UpsertMarketDataBarsBody,
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
         try:
-            _ensure_tables_ready()
             records = upsert_market_data_bars(db, body.bars)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
@@ -71,7 +73,7 @@ def create_backtest_routes(db, get_api_key_dependency, get_correlation_id_depend
         )
 
     @router.get("/market-data/bars", response_model=dict)
-    async def list_market_data_bars_endpoint(
+    def list_market_data_bars_endpoint(
         symbol: str,
         timeframe: str = "1d",
         start_time: Optional[datetime] = None,
@@ -80,7 +82,6 @@ def create_backtest_routes(db, get_api_key_dependency, get_correlation_id_depend
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
-        _ensure_tables_ready()
         records = list_market_data_bars(
             db,
             symbol=symbol,
@@ -96,13 +97,12 @@ def create_backtest_routes(db, get_api_key_dependency, get_correlation_id_depend
         )
 
     @router.post("/backtests/runs", response_model=dict)
-    async def create_backtest_run_endpoint(
+    def create_backtest_run_endpoint(
         body: CreateBacktestRunBody,
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
         try:
-            _ensure_tables_ready()
             metadata = dict(body.metadata or {})
             metadata.setdefault("correlation_id", correlation_id)
             body.metadata = metadata
@@ -116,7 +116,7 @@ def create_backtest_routes(db, get_api_key_dependency, get_correlation_id_depend
         )
 
     @router.get("/backtests/runs/latest", response_model=dict)
-    async def get_latest_exact_backtest_run_endpoint(
+    def get_latest_exact_backtest_run_endpoint(
         skill_id: str = Query(..., min_length=1),
         strategy_id: str = Query(..., min_length=1),
         symbol: str = Query(..., min_length=1),
@@ -124,7 +124,6 @@ def create_backtest_routes(db, get_api_key_dependency, get_correlation_id_depend
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
-        _ensure_tables_ready()
         detail = get_latest_exact_backtest_run_detail(
             db,
             skill_id=skill_id,
@@ -159,25 +158,23 @@ def create_backtest_routes(db, get_api_key_dependency, get_correlation_id_depend
         )
 
     @router.get("/backtests/runs/{run_id}", response_model=dict)
-    async def get_backtest_run_endpoint(
+    def get_backtest_run_endpoint(
         run_id: str,
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
-        _ensure_tables_ready()
         detail = get_backtest_run_detail(db, run_id)
         if not detail:
             raise HTTPException(status_code=404, detail=f"BacktestRun {run_id} not found")
         return wrap_response(data=detail.model_dump(mode="json"), correlation_id=correlation_id)
 
     @router.get("/skills/{skill_id}/backtests", response_model=dict)
-    async def list_skill_backtests_endpoint(
+    def list_skill_backtests_endpoint(
         skill_id: str,
         limit: int = Query(default=50, ge=1, le=200),
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
-        _ensure_tables_ready()
         records = list_skill_backtests(db, skill_id, limit=limit)
         return wrap_response(
             data=[record.model_dump(mode="json") for record in records],
@@ -186,12 +183,11 @@ def create_backtest_routes(db, get_api_key_dependency, get_correlation_id_depend
         )
 
     @router.get("/skills/{skill_id}/backtest-status", response_model=dict)
-    async def get_skill_backtest_status_endpoint(
+    def get_skill_backtest_status_endpoint(
         skill_id: str,
         api_key: str = Depends(_api_key),
         correlation_id: str = Depends(_correlation_id),
     ):
-        _ensure_tables_ready()
         status = get_skill_backtest_status(db, skill_id)
         return wrap_response(
             data=status.model_dump(mode="json"),
