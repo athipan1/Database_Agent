@@ -11,6 +11,8 @@ import logging
 
 from dotenv import load_dotenv
 
+from app.core.config import Settings
+from app.services.database_provider import create_trading_db
 from backtest_promotion_repository import setup_backtest_promotion_tables
 from backtest_repository import setup_backtest_tables
 from broker_sync_repository import setup_broker_sync_tables
@@ -27,7 +29,6 @@ from schema_identity_repository import (
     schema_identity_matches,
     setup_schema_identity_table,
 )
-from trading_db import TradingDB
 
 
 def apply_runtime_migrations(db) -> bool:
@@ -59,6 +60,7 @@ def apply_runtime_migrations(db) -> bool:
     setup_profit_lifecycle_tables(db)
     setup_backtest_tables(db)
     setup_backtest_promotion_tables(db)
+    db.ensure_price_partitions()
 
     # The identity marker is written last. If any prior migration step fails,
     # the target release is not marked as applied and deployment fails closed.
@@ -74,7 +76,9 @@ def apply_runtime_migrations(db) -> bool:
 def main() -> int:
     load_dotenv()
     logging.basicConfig(level=logging.INFO)
-    database = TradingDB()
+    settings = Settings.from_environ()
+    settings.validate()
+    database = create_trading_db(settings)
     apply_runtime_migrations(database)
     return 0
 
