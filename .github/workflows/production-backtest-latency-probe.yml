@@ -1,3 +1,4 @@
+# Temporary diagnostic workflow. Do not merge.
 name: Production Backtest Latency Probe
 
 on:
