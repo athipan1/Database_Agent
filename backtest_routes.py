@@ -47,7 +47,8 @@ def create_backtest_routes(db, get_api_key_dependency, get_correlation_id_depend
     # Production schema setup is owned by app.startup.setup_runtime_tables().
     # Unit tests use an in-memory SQLite DB without the application lifespan, so
     # initialize that disposable schema once when the router is constructed.
-    if db.db_type == "sqlite":
+    # Lightweight route-only test doubles intentionally do not expose db_type.
+    if getattr(db, "db_type", None) == "sqlite":
         setup_backtest_tables(db)
 
     async def _api_key(api_key_header_value: str = Security(api_key_header)):
