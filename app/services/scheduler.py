@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import Callable, Optional
 
 import schedule
@@ -26,12 +25,10 @@ class RuntimeScheduler:
         self,
         *,
         ingestion_job: Callable[[], None],
-        partition_job: Callable[[], None],
         stats_job: Callable[[], None],
     ) -> None:
         self._scheduler.clear()
         self._scheduler.every().day.at("00:00").do(ingestion_job)
-        self._scheduler.every().day.at("01:00").do(partition_job)
         self._scheduler.every(1).hours.do(stats_job)
 
     def start(self) -> None:

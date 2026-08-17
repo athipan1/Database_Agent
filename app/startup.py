@@ -1,4 +1,8 @@
-"""Database runtime startup, table setup, and shutdown orchestration."""
+"""Database runtime startup and shutdown orchestration.
+
+Production startup is intentionally read-only with respect to schema state.
+DDL belongs to the deployment migration command, not the application lifespan.
+"""
 
 from __future__ import annotations
 
@@ -6,34 +10,45 @@ import logging
 
 from starlette.concurrency import run_in_threadpool
 
-from backtest_promotion_repository import setup_backtest_promotion_tables
-from backtest_repository import setup_backtest_tables
-from broker_sync_repository import setup_broker_sync_tables
-from execution_job_repository import setup_execution_job_table
-from fill_repository import setup_fill_table
-from history_repository import setup_history_tables
-from plan_record_repository import setup_plan_record_table
-from policy_review_repository import setup_policy_review_table
-from profit_lifecycle_repository import setup_profit_lifecycle_tables
-from protective_order_repository import setup_protective_order_columns
-from risk_approval_repository import setup_risk_approval_table
-from schema_identity_repository import setup_schema_identity_table
+from schema_identity_repository import (
+    SCHEMA_NAME,
+    SCHEMA_SHA256,
+    SCHEMA_VERSION,
+    get_schema_identity,
+)
 
 
-def setup_runtime_tables(db) -> None:
-    db.setup_database()
-    setup_history_tables(db)
-    setup_risk_approval_table(db)
-    setup_protective_order_columns(db)
-    setup_execution_job_table(db)
-    setup_fill_table(db)
-    setup_broker_sync_tables(db)
-    setup_plan_record_table(db)
-    setup_policy_review_table(db)
-    setup_profit_lifecycle_tables(db)
-    setup_backtest_tables(db)
-    setup_backtest_promotion_tables(db)
-    setup_schema_identity_table(db)
+def verify_runtime_schema(db) -> dict:
+    """Fail closed unless the deployed database matches this release schema.
+
+    This function performs SELECT-only schema identity validation. It must never
+    create, alter, repair, or otherwise mutate database schema state.
+    """
+
+    identity = get_schema_identity(db)
+    if not identity:
+        raise RuntimeError(
+            "Database schema identity is missing. Run deployment migrations before startup."
+        )
+
+    mismatches = []
+    if identity.get("schema_name") != SCHEMA_NAME:
+        mismatches.append(
+            f"schema_name={identity.get('schema_name')!r} expected={SCHEMA_NAME!r}"
+        )
+    if identity.get("schema_version") != SCHEMA_VERSION:
+        mismatches.append(
+            f"schema_version={identity.get('schema_version')!r} expected={SCHEMA_VERSION!r}"
+        )
+    if identity.get("schema_sha256") != SCHEMA_SHA256:
+        mismatches.append("schema_sha256 does not match the release manifest")
+
+    if mismatches:
+        raise RuntimeError(
+            "Database schema identity mismatch; run deployment migrations before startup: "
+            + "; ".join(mismatches)
+        )
+    return identity
 
 
 def log_database_stats(db) -> None:
@@ -49,13 +64,18 @@ def log_database_stats(db) -> None:
 async def startup_runtime(runtime) -> None:
     logging.info("Database Agent API starting up.")
     try:
-        # psycopg2 and schema verification are synchronous. Keep them off the
-        # FastAPI event loop so startup does not stall unrelated async tasks.
-        await run_in_threadpool(setup_runtime_tables, runtime.db)
-        logging.info("Database tables verification/creation complete.")
+        # psycopg2 is synchronous. Keep the single read-only schema identity
+        # query off the event loop, but do not run DDL or self-healing here.
+        identity = await run_in_threadpool(verify_runtime_schema, runtime.db)
+        logging.info(
+            "Database schema identity verified.",
+            extra={
+                "schema_name": identity.get("schema_name"),
+                "schema_version": identity.get("schema_version"),
+            },
+        )
         runtime.runtime_scheduler.configure(
             ingestion_job=runtime.run_ingestion_job,
-            partition_job=runtime.db.ensure_price_partitions,
             stats_job=runtime.log_database_stats,
         )
         runtime.runtime_scheduler.start()
