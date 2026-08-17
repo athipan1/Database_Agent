@@ -1,0 +1,93 @@
+name: Migrations-first Startup CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  migration-startup-contract:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_USER: trading_user
+          POSTGRES_PASSWORD: migration_test_password
+          POSTGRES_DB: trading_db_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_PROVIDER: postgres
+      DATABASE_URL: postgresql://trading_user:migration_test_password@localhost:5432/trading_db_test
+      DATABASE_SSL_MODE: disable
+      DATABASE_CREATE_IF_MISSING: 'false'
+      DATABASE_AGENT_API_KEY: migration-test-key
+      DATABASE_DEV_MODE: 'false'
+      DATABASE_REQUIRE_SCHEMA_IDENTITY: 'true'
+      TRADING_MODE: PAPER
+      REDIS_HOST: localhost
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run migrations-first unit tests
+        run: python -m pytest -q tests/test_migrations_first_startup.py
+
+      - name: Apply deployment migration
+        run: python -m scripts.apply_runtime_migrations
+
+      - name: Verify migration is idempotent
+        run: python -m scripts.apply_runtime_migrations
+
+      - name: Measure API boot after migration
+        run: |
+          started="$(python - <<'PY'
+          import time
+          print(time.time())
+          PY
+          )"
+          python -m uvicorn main:app --host 127.0.0.1 --port 8004 >/tmp/database-agent-startup.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:8004/ready >/tmp/ready.json; then
+              ended="$(python - <<'PY'
+          import time
+          print(time.time())
+          PY
+          )"
+              python - "$started" "$ended" <<'PY'
+          import json
+          import sys
+          elapsed = float(sys.argv[2]) - float(sys.argv[1])
+          print(json.dumps({"boot_seconds": round(elapsed, 3)}))
+          if elapsed >= 15:
+              raise SystemExit(f"post-migration boot too slow: {elapsed:.3f}s >= 15s")
+          PY
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/database-agent-startup.log
+          exit 1
