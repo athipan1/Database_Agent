@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from starlette.concurrency import run_in_threadpool
+
 from backtest_promotion_repository import setup_backtest_promotion_tables
 from backtest_repository import setup_backtest_tables
 from broker_sync_repository import setup_broker_sync_tables
@@ -47,7 +49,9 @@ def log_database_stats(db) -> None:
 async def startup_runtime(runtime) -> None:
     logging.info("Database Agent API starting up.")
     try:
-        setup_runtime_tables(runtime.db)
+        # psycopg2 and schema verification are synchronous. Keep them off the
+        # FastAPI event loop so startup does not stall unrelated async tasks.
+        await run_in_threadpool(setup_runtime_tables, runtime.db)
         logging.info("Database tables verification/creation complete.")
         runtime.runtime_scheduler.configure(
             ingestion_job=runtime.run_ingestion_job,
