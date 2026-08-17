@@ -52,24 +52,25 @@ jobs:
           DATABASE_DEV_MODE: 'true'
         run: python -m pytest
 
-      - name: Build canonical schema through application setup
+      - name: Build canonical schema through deployment migrations
         env:
           DATABASE_PROVIDER: postgres
           DATABASE_URL: postgresql://trading_user:schema_test_password@localhost:5432/trading_db_test
           DATABASE_SSL_MODE: disable
-          DATABASE_CREATE_IF_MISSING: 'true'
+          DATABASE_CREATE_IF_MISSING: 'false'
           DATABASE_AGENT_API_KEY: schema-test-key
-          DATABASE_DEV_MODE: 'true'
+          DATABASE_DEV_MODE: 'false'
+          DATABASE_REQUIRE_SCHEMA_IDENTITY: 'true'
           TRADING_MODE: PAPER
           REDIS_HOST: localhost
         run: |
+          python -m scripts.apply_runtime_migrations
           python - <<'PY'
-          from app.startup import setup_runtime_tables
+          from app.core.config import Settings
+          from app.services.database_provider import create_trading_db
           from schema_identity_repository import schema_identity_matches
-          from trading_db import TradingDB
 
-          database = TradingDB(max_retries=3, initial_delay=0.1)
-          setup_runtime_tables(database)
+          database = create_trading_db(Settings.from_environ())
           assert database.check_connection()
           assert schema_identity_matches(database)
           PY
