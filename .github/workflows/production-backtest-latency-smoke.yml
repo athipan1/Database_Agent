@@ -11,11 +11,6 @@ on:
         options:
           - '10'
           - '20'
-      database_agent_url:
-        description: Optional production Database_Agent URL override
-        required: false
-        default: ''
-        type: string
 
 permissions:
   contents: read
@@ -30,7 +25,7 @@ jobs:
     timeout-minutes: 5
     environment: supabase-primary-cutover
     env:
-      DATABASE_AGENT_URL: ${{ inputs.database_agent_url || vars.DATABASE_AGENT_URL || secrets.DATABASE_AGENT_URL || 'https://databaseagent-production.up.railway.app' }}
+      DATABASE_AGENT_URL: ${{ vars.DATABASE_AGENT_URL || secrets.DATABASE_AGENT_URL || 'https://databaseagent-production.up.railway.app' }}
       DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
       LATENCY_GATE_SECONDS: ${{ inputs.latency_gate_seconds }}
 
