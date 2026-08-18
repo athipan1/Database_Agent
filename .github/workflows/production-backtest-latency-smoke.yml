@@ -1,0 +1,87 @@
+name: Production Backtest Latency Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      latency_gate_seconds:
+        description: Fail if POST, exact GET, or their combined latency reaches this threshold
+        required: true
+        default: '20'
+        type: choice
+        options:
+          - '10'
+          - '20'
+      database_agent_url:
+        description: Optional production Database_Agent URL override
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-backtest-latency-smoke
+  cancel-in-progress: false
+
+jobs:
+  production-backtest-latency:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: supabase-primary-cutover
+    env:
+      DATABASE_AGENT_URL: ${{ inputs.database_agent_url || vars.DATABASE_AGENT_URL || secrets.DATABASE_AGENT_URL || 'https://databaseagent-production.up.railway.app' }}
+      DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
+      LATENCY_GATE_SECONDS: ${{ inputs.latency_gate_seconds }}
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify required production configuration
+        shell: bash
+        run: |
+          test -n "$DATABASE_AGENT_URL" || {
+            echo "DATABASE_AGENT_URL is missing" >&2
+            exit 1
+          }
+          test -n "$DATABASE_AGENT_API_KEY" || {
+            echo "DATABASE_AGENT_API_KEY secret is missing from the supabase-primary-cutover environment" >&2
+            exit 1
+          }
+
+      - name: Run production Backtest POST to exact GET latency smoke
+        shell: bash
+        run: |
+          python scripts/production_backtest_latency_smoke.py \
+            | tee production-backtest-latency-result.json
+
+      - name: Publish sanitized result
+        if: always()
+        shell: bash
+        run: |
+          echo "## Production Backtest Latency Smoke" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Threshold: \`${LATENCY_GATE_SECONDS}s\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Safety: synthetic, storage-only, never promotion-eligible" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f production-backtest-latency-result.json ]]; then
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat production-backtest-latency-result.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The smoke script did not produce a result file." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload sanitized latency evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-backtest-latency-${{ github.run_id }}-${{ github.run_attempt }}
+          path: production-backtest-latency-result.json
+          if-no-files-found: ignore
+          retention-days: 14
