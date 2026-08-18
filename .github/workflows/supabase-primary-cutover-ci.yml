@@ -93,3 +93,32 @@ jobs:
               if database.pool is not None:
                   database.pool.closeall()
           PY
+
+  production-backtest-latency:
+    if: github.head_ref == 'agent/production-backtest-latency-probe'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: supabase-primary-cutover
+    env:
+      DATABASE_AGENT_URL: https://databaseagent-production.up.railway.app
+      DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run production Backtest POST to exact GET latency probe
+        run: python scripts/production_backtest_latency_probe.py | tee production-backtest-latency-result.json
+
+      - name: Publish sanitized latency result
+        if: always()
+        run: |
+          echo '## Production Backtest Latency Probe' >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f production-backtest-latency-result.json ]]; then
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat production-backtest-latency-result.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
