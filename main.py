@@ -23,6 +23,7 @@ except ValueError as exc:
 
 from app import runtime as _runtime
 from app.application import create_application
+from position_bucket_repository import register_position_bucket_routes
 
 
 _runtime.apply_settings(_runtime_settings)
@@ -33,6 +34,7 @@ for _name in dir(_runtime):
 
 app = create_application(_runtime)
 _runtime.app = app
+register_position_bucket_routes(_runtime.db)
 
 
 class _RuntimeFacade(types.ModuleType):
