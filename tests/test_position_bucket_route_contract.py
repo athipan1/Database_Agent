@@ -9,6 +9,14 @@ class RuntimeStub:
     def __getattr__(self, name):
         return getattr(base_runtime, name)
 
+    @staticmethod
+    def get_api_key():
+        return "test-api-key"
+
+    @staticmethod
+    def get_correlation_id():
+        return "bucket-contract-test"
+
     async def startup_event(self):
         return None
 
@@ -19,8 +27,6 @@ class RuntimeStub:
 def _client():
     runtime = RuntimeStub()
     app = create_application(runtime)
-    app.dependency_overrides[base_runtime.get_api_key] = lambda: "test-api-key"
-    app.dependency_overrides[base_runtime.get_correlation_id] = lambda: "bucket-contract-test"
     return app, TestClient(app)
 
 
