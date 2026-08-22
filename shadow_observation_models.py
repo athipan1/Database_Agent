@@ -19,6 +19,7 @@ class ShadowObservationBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     event_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    event_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
     shadow_trade_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
     account_id: Union[int, str]
     correlation_id: Optional[str] = Field(default=None, max_length=200)
