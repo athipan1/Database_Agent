@@ -1,9 +1,10 @@
 import sqlite3
+import pytest
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from broker_sync_repository import sync_broker_state
+from broker_sync_repository import BrokerQuantityError, sync_broker_state
 from broker_sync_status_repository import broker_sync_status
 from models import BrokerSyncResult
 
@@ -181,6 +182,40 @@ def test_sync_broker_state_updates_cash_positions_and_open_orders():
     assert len(orders) == 1
     assert {order["broker_order_id"] for order in orders} == {"stop-adbe"}
     assert {order["status"] for order in orders} == {"placed"}
+
+
+@pytest.mark.parametrize("location,key", [
+    ("positions", "qty"), ("open_orders", "qty"), ("open_orders", "filled_qty"),
+])
+@pytest.mark.parametrize("value,reason", [
+    ("85.47719182", "BROKER_FRACTIONAL_QUANTITY_UNSUPPORTED"),
+    ("NaN", "BROKER_QUANTITY_INVALID"),
+    ("Infinity", "BROKER_QUANTITY_INVALID"),
+    ("bad", "BROKER_QUANTITY_INVALID"),
+    (None, "BROKER_QUANTITY_INVALID"),
+    (str(2**63), "BROKER_QUANTITY_OUT_OF_RANGE"),
+])
+def test_unrepresentable_quantity_rejects_entire_snapshot_without_mutation(location, key, value, reason):
+    db = SQLiteBrokerSyncTestDB()
+    sync_broker_state(db, broker_state())
+    before = list(db.conn.iterdump())
+    update = broker_state()
+    update["account"]["cash"] = "1.00"
+    update[location][0][key] = value
+    with pytest.raises(BrokerQuantityError, match=f"^{reason}$"):
+        sync_broker_state(db, update)
+    assert list(db.conn.iterdump()) == before
+
+
+def test_integer_valued_decimal_and_zero_fill_remain_exact():
+    db = SQLiteBrokerSyncTestDB()
+    state = broker_state()
+    state["positions"][0]["qty"] = "52.000000000"
+    state["open_orders"][0]["filled_qty"] = 0
+    state["open_orders"][0]["executed_quantity"] = 12
+    sync_broker_state(db, state)
+    assert db.get_positions(1)[0]["quantity"] == 52
+    assert db.get_orders(1)[0]["executed_quantity"] == 0
 
 
 def test_sync_broker_state_preserves_existing_position_bucket_when_broker_has_none():
