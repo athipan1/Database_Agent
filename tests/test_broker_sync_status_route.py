@@ -65,6 +65,18 @@ def test_setup_broker_sync_tables_registers_status_and_snapshot_routes(monkeypat
     assert app.state.broker_sync_snapshot_route_registered is True
 
 
+def test_fractional_snapshot_returns_deterministic_reason_without_mutation(monkeypatch):
+    app, db = _register_routes(monkeypatch)
+    before = list(db.conn.iterdump())
+    response = TestClient(app).post("/broker-sync/snapshot", json={
+        "account_id": 1, "account": {"cash": "1"},
+        "positions": [{"symbol": "TEST", "qty": "0.5"}],
+    })
+    assert response.status_code == 422
+    assert response.json() == {"detail": {"reason_code": "BROKER_FRACTIONAL_QUANTITY_UNSUPPORTED"}}
+    assert list(db.conn.iterdump()) == before
+
+
 def test_broker_sync_snapshot_route_captures_snapshot(monkeypatch):
     app, _ = _register_routes(monkeypatch)
     client = TestClient(app)

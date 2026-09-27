@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List
 
 from position_bucket_repository import setup_position_bucket_columns
@@ -37,11 +37,27 @@ def _decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
         return default
 
 
+class BrokerQuantityError(ValueError):
+    """A broker quantity cannot be represented by the current BIGINT contract."""
+
+
 def _qty(value: Any) -> int:
     try:
-        return int(Decimal(str(value or 0)))
-    except Exception:
-        return 0
+        quantity = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise BrokerQuantityError("BROKER_QUANTITY_INVALID") from None
+    if not quantity.is_finite():
+        raise BrokerQuantityError("BROKER_QUANTITY_INVALID")
+    if quantity != quantity.to_integral_value():
+        raise BrokerQuantityError("BROKER_FRACTIONAL_QUANTITY_UNSUPPORTED")
+    if not -(2**63) <= quantity < 2**63:
+        raise BrokerQuantityError("BROKER_QUANTITY_OUT_OF_RANGE")
+    return int(quantity)
+
+
+def _quantity_value(item: Dict[str, Any], primary: str, alias: str, default=None):
+    # A present zero is authoritative; do not replace it with a truthy alias.
+    return item[primary] if primary in item else item.get(alias, default)
 
 
 def _normalize_strategy_bucket(raw: Any) -> str:
@@ -167,7 +183,12 @@ def _register_status_route(db) -> None:
         return wrap_response(data=broker_sync_status(db, account_id=account_id))
 
     async def broker_sync_snapshot_endpoint(payload: Dict[str, Any]):
-        return wrap_response(data=sync_broker_state(db, payload))
+        from fastapi import HTTPException
+
+        try:
+            return wrap_response(data=sync_broker_state(db, payload))
+        except BrokerQuantityError as exc:
+            raise HTTPException(status_code=422, detail={"reason_code": str(exc)}) from exc
 
     async def skill_trade_outcome_endpoint(payload: Dict[str, Any]):
         return wrap_response(data=create_skill_trade_outcome(db, payload))
@@ -257,7 +278,7 @@ def _replace_positions(cursor, db, account_id: int, positions: List[Dict[str, An
         if not symbol:
             continue
         seen_symbols.append(symbol)
-        quantity = _qty(item.get("qty") or item.get("quantity"))
+        quantity = _qty(_quantity_value(item, "qty", "quantity"))
         average_cost = _decimal(item.get("avg_entry_price") or item.get("average_cost"))
         current_price = _decimal(item.get("current_price"), average_cost)
         market_value = _decimal(item.get("market_value"), Decimal(quantity) * current_price)
@@ -346,13 +367,13 @@ def _sync_open_orders(cursor, db, account_id: int, rows: List[Dict[str, Any]]) -
         if not broker_id or not symbol:
             continue
         side = str(item.get("side") or "buy").lower()
-        quantity = _qty(item.get("qty") or item.get("quantity"))
+        quantity = _qty(_quantity_value(item, "qty", "quantity"))
         kind = str(item.get("type") or item.get("order_type") or "market").lower()
         tif = str(item.get("time_in_force") or "day")
         price = item.get("limit_price") or item.get("stop_price") or item.get("price")
         state = _status(item.get("status"))
         raw_state = str(item.get("status") or "")
-        filled = _qty(item.get("filled_qty") or item.get("executed_quantity"))
+        filled = _qty(_quantity_value(item, "filled_qty", "executed_quantity", 0))
         submitted_at = item.get("submitted_at") or synced_at
         existing_bucket = _existing_order_bucket(cursor, db, str(broker_id))
         strategy_bucket = _strategy_bucket_or_existing(item, existing_bucket)
@@ -419,6 +440,13 @@ def _insert_snapshot(cursor, db, account_id: int, state: Dict[str, Any]) -> None
 
 
 def sync_broker_state(db, broker_state: Dict[str, Any]) -> Dict[str, Any]:
+    # Validate the entire snapshot before DDL or any account/position/order write.
+    # Fractional support needs an end-to-end schema migration, never truncation.
+    for item in broker_state.get("positions") or []:
+        _qty(_quantity_value(item, "qty", "quantity"))
+    for item in broker_state.get("open_orders") or []:
+        _qty(_quantity_value(item, "qty", "quantity"))
+        _qty(_quantity_value(item, "filled_qty", "executed_quantity", 0))
     setup_broker_sync_tables(db)
     account_id = int(broker_state.get("account_id") or 1)
     synced_at = _now(db)
