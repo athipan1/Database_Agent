@@ -37,11 +37,12 @@ def _decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
         return default
 
 
-def _qty(value: Any) -> int:
+def _qty(value: Any) -> Decimal:
+    """Preserve Alpaca fractional-share quantities at database precision."""
     try:
-        return int(Decimal(str(value or 0)))
+        return Decimal(str(value or 0)).quantize(Decimal("0.000001"))
     except Exception:
-        return 0
+        return Decimal("0")
 
 
 def _normalize_strategy_bucket(raw: Any) -> str:
