@@ -138,48 +138,6 @@ def _status(value: Any) -> str:
     }.get(raw, "placed" if raw else "pending")
 
 
-def _main_module():
-    return sys.modules.get("main") or sys.modules.get("__main__")
-
-
-def _register_status_route(db) -> None:
-    main_module = _main_module()
-    app = getattr(main_module, "app", None)
-    if app is None or getattr(app.state, "broker_sync_routes_registered", False):
-        return
-    from broker_sync_status_repository import broker_sync_status
-
-    wrap_response = getattr(main_module, "wrap_response", None)
-    if wrap_response is None:
-        def wrap_response(data=None, status="success", error=None):
-            return {"status": status, "agent_type": "database", "data": data, "error": error}
-
-    dependencies = []
-    get_api_key = getattr(main_module, "get_api_key", None)
-    if get_api_key is not None:
-        try:
-            from fastapi import Depends
-            dependencies = [Depends(get_api_key)]
-        except Exception:
-            dependencies = []
-
-    async def broker_sync_status_endpoint(account_id: int = 1):
-        return wrap_response(data=broker_sync_status(db, account_id=account_id))
-
-    async def broker_sync_snapshot_endpoint(payload: Dict[str, Any]):
-        return wrap_response(data=sync_broker_state(db, payload))
-
-    async def skill_trade_outcome_endpoint(payload: Dict[str, Any]):
-        return wrap_response(data=create_skill_trade_outcome(db, payload))
-
-    app.add_api_route("/broker-sync/status", broker_sync_status_endpoint, methods=["GET"], dependencies=dependencies, name="broker_sync_status_endpoint")
-    app.add_api_route("/broker-sync/snapshot", broker_sync_snapshot_endpoint, methods=["POST"], dependencies=dependencies, name="broker_sync_snapshot_endpoint")
-    app.add_api_route("/skills/trade-outcomes", skill_trade_outcome_endpoint, methods=["POST"], dependencies=dependencies, name="skill_trade_outcome_endpoint")
-    app.state.broker_sync_status_route_registered = True
-    app.state.broker_sync_snapshot_route_registered = True
-    app.state.skill_trade_outcome_route_registered = True
-    app.state.broker_sync_routes_registered = True
-
 
 def setup_broker_sync_tables(db) -> None:
     timestamp_type = "TEXT" if db.db_type == "sqlite" else "TIMESTAMPTZ"
