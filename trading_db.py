@@ -326,6 +326,29 @@ class TradingDB:
             cursor.execute(query)
             logging.info(f"Ensured column {column} exists in table {table} (Postgres).")
 
+    def ensure_fractional_quantity_schema(self, cursor):
+        """Upgrade trading quantities to fixed-precision fractional-share storage.
+
+        Existing integer quantities are losslessly promoted to NUMERIC. The
+        conversion is intentionally scoped to positions/orders because broker
+        reconciliation must preserve Alpaca fractional quantities exactly.
+        """
+        if self.db_type != "postgres":
+            return
+        cursor.execute(
+            """
+            ALTER TABLE positions
+                ALTER COLUMN quantity TYPE NUMERIC(18, 6)
+                USING quantity::numeric;
+            ALTER TABLE orders
+                ALTER COLUMN quantity TYPE NUMERIC(18, 6)
+                USING quantity::numeric;
+            ALTER TABLE orders
+                ALTER COLUMN executed_quantity TYPE NUMERIC(18, 6)
+                USING COALESCE(executed_quantity, 0)::numeric;
+            """
+        )
+
     def setup_database(self):
         with self.connection_scope() as conn:
             cursor = self.get_cursor(conn)
@@ -365,7 +388,7 @@ class TradingDB:
                     position_id {pk_type},
                     account_id INTEGER NOT NULL REFERENCES accounts(account_id),
                     symbol TEXT NOT NULL,
-                    quantity BIGINT NOT NULL,
+                    quantity NUMERIC(18, 6) NOT NULL,
                     average_cost {numeric_type} NOT NULL,
                     UNIQUE (account_id, symbol)
                 );
@@ -386,7 +409,7 @@ class TradingDB:
                     status TEXT NOT NULL,
                     broker_order_id TEXT,
                     reason TEXT,
-                    executed_quantity BIGINT DEFAULT 0,
+                    executed_quantity NUMERIC(18, 6) DEFAULT 0,
                     avg_execution_price {numeric_type},
                     executed_at {timestamp_type},
                     correlation_id TEXT,
@@ -396,6 +419,9 @@ class TradingDB:
                     failure_reason TEXT
                 );
             """)
+
+            # Preserve fractional Alpaca shares for existing PostgreSQL databases.
+            self.ensure_fractional_quantity_schema(cursor)
 
             # Ensure new columns exist for existing databases
             self._add_column_if_not_exists(cursor, "orders", "trade_id", "TEXT")
