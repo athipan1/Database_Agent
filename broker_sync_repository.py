@@ -180,7 +180,6 @@ def setup_broker_sync_tables(db) -> None:
     setup_profit_lifecycle_tables(db)
     setup_position_bucket_columns(db)
     setup_skill_trade_outcome_table(db)
-    _register_status_route(db)
 
 
 def _payload(value: Any, db) -> Any:
