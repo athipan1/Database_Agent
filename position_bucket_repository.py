@@ -478,6 +478,60 @@ def _install_postgres_assignment_triggers(cursor) -> None:
     )
 
 
+def _backfill_existing_strategy_bucket_assignments(cursor, db) -> None:
+    """Apply seeded canonical assignments to existing unassigned rows.
+
+    Deployment seeds are loaded during startup, but broker snapshots can insert
+    positions before the assignment registry is recreated. Existing rows do not
+    fire INSERT triggers when the registry is subsequently seeded, so explicitly
+    backfill them before reconciliation evaluates semantic parity.
+    """
+    cursor.execute(
+        f"""
+        UPDATE positions
+        SET strategy_bucket = (
+                SELECT strategy_bucket
+                FROM strategy_bucket_assignments
+                WHERE account_id = positions.account_id
+                  AND symbol = UPPER(positions.symbol)
+            ),
+            strategy_bucket_source = 'canonical_assignment',
+            strategy_bucket_reason = COALESCE((
+                SELECT reason
+                FROM strategy_bucket_assignments
+                WHERE account_id = positions.account_id
+                  AND symbol = UPPER(positions.symbol)
+            ), 'restored_from_canonical_assignment'),
+            strategy_bucket_updated_at = CURRENT_TIMESTAMP
+        WHERE COALESCE(TRIM(LOWER(strategy_bucket)), 'unassigned') IN ('', 'unassigned')
+          AND EXISTS (
+                SELECT 1
+                FROM strategy_bucket_assignments
+                WHERE account_id = positions.account_id
+                  AND symbol = UPPER(positions.symbol)
+          )
+        """
+    )
+    cursor.execute(
+        f"""
+        UPDATE orders
+        SET strategy_bucket = (
+                SELECT strategy_bucket
+                FROM strategy_bucket_assignments
+                WHERE account_id = orders.account_id
+                  AND symbol = UPPER(orders.symbol)
+            )
+        WHERE COALESCE(TRIM(LOWER(strategy_bucket)), 'unassigned') IN ('', 'unassigned')
+          AND EXISTS (
+                SELECT 1
+                FROM strategy_bucket_assignments
+                WHERE account_id = orders.account_id
+                  AND symbol = UPPER(orders.symbol)
+          )
+        """
+    )
+
+
 def setup_position_bucket_columns(db) -> None:
     timestamp_type = "TEXT" if db.db_type == "sqlite" else "TIMESTAMPTZ"
     with db.connection_scope() as conn:
@@ -490,6 +544,7 @@ def setup_position_bucket_columns(db) -> None:
             db._add_column_if_not_exists(cursor, "orders", "strategy_bucket", "TEXT DEFAULT 'unassigned'")
             _create_assignment_table(cursor, db)
             _seed_strategy_bucket_assignments(cursor, db)
+            _backfill_existing_strategy_bucket_assignments(cursor, db)
             if db.db_type == "sqlite":
                 _install_sqlite_assignment_triggers(cursor)
             else:
