@@ -37,11 +37,12 @@ def _decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
         return default
 
 
-def _qty(value: Any) -> int:
+def _qty(value: Any) -> Decimal:
+    """Preserve Alpaca fractional-share quantities at database precision."""
     try:
-        return int(Decimal(str(value or 0)))
+        return Decimal(str(value or 0)).quantize(Decimal("0.000001"))
     except Exception:
-        return 0
+        return Decimal("0")
 
 
 def _normalize_strategy_bucket(raw: Any) -> str:
@@ -241,7 +242,7 @@ def _replace_positions(cursor, db, account_id: int, positions: List[Dict[str, An
                 WHERE account_id = {p} AND position_id = {p}
                 """,
                 (
-                    quantity,
+                    str(quantity),
                     str(average_cost),
                     str(current_price),
                     str(market_value),
@@ -268,7 +269,7 @@ def _replace_positions(cursor, db, account_id: int, positions: List[Dict[str, An
                 (
                     account_id,
                     symbol,
-                    quantity,
+                    str(quantity),
                     str(average_cost),
                     str(current_price),
                     str(market_value),
@@ -322,7 +323,7 @@ def _sync_open_orders(cursor, db, account_id: int, rows: List[Dict[str, Any]]) -
                     status = {p}, broker_status = {p}, executed_quantity = {p}, strategy_bucket = {p}, broker_synced_at = {p}
                 WHERE broker_order_id = {p}
                 """,
-                (symbol, side, kind, quantity, str(price) if price is not None else None, tif, state, raw_state, filled, strategy_bucket, synced_at, str(broker_id)),
+                (symbol, side, kind, str(quantity), str(price) if price is not None else None, tif, state, raw_state, str(filled), strategy_bucket, synced_at, str(broker_id)),
             )
         else:
             trade_id = f"broker:{broker_id}"
@@ -331,7 +332,7 @@ def _sync_open_orders(cursor, db, account_id: int, rows: List[Dict[str, Any]]) -
                 INSERT INTO orders (account_id, trade_id, symbol, side, order_type, quantity, price, time_in_force, status, broker_order_id, broker_status, executed_quantity, strategy_bucket, timestamp, broker_synced_at)
                 VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
                 """,
-                (account_id, trade_id, symbol, side, kind, quantity, str(price) if price is not None else None, tif, state, str(broker_id), raw_state, filled, strategy_bucket, submitted_at, synced_at),
+                (account_id, trade_id, symbol, side, kind, str(quantity), str(price) if price is not None else None, tif, state, str(broker_id), raw_state, str(filled), strategy_bucket, submitted_at, synced_at),
             )
         count += 1
     return count

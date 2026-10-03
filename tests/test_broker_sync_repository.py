@@ -52,7 +52,7 @@ class SQLiteBrokerSyncTestDB:
                 position_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id INTEGER NOT NULL,
                 symbol TEXT NOT NULL,
-                quantity BIGINT NOT NULL,
+                quantity NUMERIC(18, 6) NOT NULL,
                 average_cost TEXT NOT NULL,
                 UNIQUE (account_id, symbol)
             )
@@ -67,13 +67,13 @@ class SQLiteBrokerSyncTestDB:
                 symbol TEXT NOT NULL,
                 side TEXT NOT NULL,
                 order_type TEXT NOT NULL,
-                quantity BIGINT NOT NULL,
+                quantity NUMERIC(18, 6) NOT NULL,
                 price TEXT,
                 time_in_force TEXT DEFAULT 'GTC',
                 status TEXT NOT NULL,
                 broker_order_id TEXT,
                 reason TEXT,
-                executed_quantity BIGINT DEFAULT 0,
+                executed_quantity NUMERIC(18, 6) DEFAULT 0,
                 avg_execution_price TEXT,
                 executed_at TEXT,
                 correlation_id TEXT,
@@ -373,3 +373,22 @@ def test_broker_sync_status_uses_canonical_cash_qty_and_broker_order_ids(monkeyp
     assert status["mismatch"]["mismatch_count"] == 0
     assert status["database"]["position_count"] == 1
     assert status["database"]["open_order_count"] == 1
+
+    
+def test_sync_broker_state_preserves_fractional_position_quantity():
+    db = SQLiteBrokerSyncTestDB()
+    state = broker_state()
+    state["positions"] = [
+        {
+            "symbol": "ADBE",
+            "qty": "52.375",
+            "avg_entry_price": "198.76",
+            "current_price": "198.67",
+            "market_value": "10397.73",
+        }
+    ]
+
+    sync_broker_state(db, state)
+
+    position = db.get_positions(1)[0]
+    assert Decimal(str(position["quantity"])) == Decimal("52.375000")

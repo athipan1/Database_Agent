@@ -5,6 +5,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import broker_sync_repository
+from app.route_registry import mount_router_routes
+from app.routers.broker_sync import create_broker_sync_router
 
 
 class SQLiteRouteTestDB:
@@ -46,27 +48,41 @@ class SQLiteRouteTestDB:
         self.conn.commit()
 
 
-def _register_routes(monkeypatch):
+def _register_routes():
     app = FastAPI()
-    fake_main = type("FakeMain", (), {"app": app})()
-    monkeypatch.setitem(__import__("sys").modules, "main", fake_main)
     db = SQLiteRouteTestDB()
     broker_sync_repository.setup_broker_sync_tables(db)
+
+    class Runtime:
+        def __init__(self, database):
+            self.db = database
+
+        @staticmethod
+        def get_api_key():
+            return "test-key"
+
+        @staticmethod
+        def get_correlation_id():
+            return "test-correlation-id"
+
+        @staticmethod
+        def wrap_response(*, data):
+            return {"status": "success", "data": data}
+
+    mount_router_routes(app, create_broker_sync_router(Runtime(db)))
     return app, db
 
 
-def test_setup_broker_sync_tables_registers_status_and_snapshot_routes(monkeypatch):
-    app, _ = _register_routes(monkeypatch)
+def test_broker_sync_router_registers_status_and_snapshot_routes():
+    app, _ = _register_routes()
 
-    paths = {route.path for route in app.routes}
+    paths = {route.path for route in app.routes if hasattr(route, "path")}
     assert "/broker-sync/status" in paths
     assert "/broker-sync/snapshot" in paths
-    assert app.state.broker_sync_status_route_registered is True
-    assert app.state.broker_sync_snapshot_route_registered is True
 
 
-def test_broker_sync_snapshot_route_captures_snapshot(monkeypatch):
-    app, _ = _register_routes(monkeypatch)
+def test_broker_sync_snapshot_route_captures_snapshot():
+    app, _ = _register_routes()
     client = TestClient(app)
 
     response = client.post(
