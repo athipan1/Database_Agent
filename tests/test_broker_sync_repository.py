@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from broker_sync_repository import sync_broker_state
+from position_bucket_repository import setup_position_bucket_columns
 from broker_sync_status_repository import broker_sync_status
 from models import BrokerSyncResult
 
@@ -159,6 +160,37 @@ def broker_state(open_orders=None):
             "cash_negative": False,
         },
     }
+
+
+def test_seed_backfills_existing_unassigned_position_and_order_buckets(monkeypatch):
+    db = SQLiteBrokerSyncTestDB()
+    monkeypatch.setenv(
+        "STRATEGY_BUCKET_ASSIGNMENTS_JSON",
+        "ADBE=value_rebound",
+    )
+    db.conn.execute(
+        """
+        INSERT INTO positions (account_id, symbol, quantity, average_cost)
+        VALUES (1, 'ADBE', 52.375, '198.76')
+        """
+    )
+    db.conn.execute(
+        """
+        INSERT INTO orders (
+            trade_id, account_id, symbol, side, order_type, quantity, status
+        ) VALUES ('seed-order', 1, 'ADBE', 'sell', 'stop', 52.375, 'placed')
+        """
+    )
+    db.conn.commit()
+
+    setup_position_bucket_columns(db)
+
+    position = db.get_positions(1)[0]
+    order = db.get_orders(1)[0]
+    assert position["strategy_bucket"] == "value_rebound"
+    assert position["strategy_bucket_source"] == "canonical_assignment"
+    assert order["strategy_bucket"] == "value_rebound"
+    assert db.get_assignments(1)[0]["strategy_bucket"] == "value_rebound"
 
 
 def test_sync_broker_state_updates_cash_positions_and_open_orders():
