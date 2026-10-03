@@ -486,7 +486,6 @@ def _backfill_existing_strategy_bucket_assignments(cursor, db) -> None:
     fire INSERT triggers when the registry is subsequently seeded, so explicitly
     backfill them before reconciliation evaluates semantic parity.
     """
-    p = _param(db)
     cursor.execute(
         f"""
         UPDATE positions
@@ -503,7 +502,7 @@ def _backfill_existing_strategy_bucket_assignments(cursor, db) -> None:
                 WHERE account_id = positions.account_id
                   AND symbol = UPPER(positions.symbol)
             ), 'restored_from_canonical_assignment'),
-            strategy_bucket_updated_at = {_now(db) if False else 'CURRENT_TIMESTAMP'}
+            strategy_bucket_updated_at = CURRENT_TIMESTAMP
         WHERE COALESCE(TRIM(LOWER(strategy_bucket)), 'unassigned') IN ('', 'unassigned')
           AND EXISTS (
                 SELECT 1
