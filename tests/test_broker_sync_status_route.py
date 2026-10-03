@@ -75,7 +75,7 @@ def _register_routes():
 def test_broker_sync_router_registers_status_and_snapshot_routes():
     app, _ = _register_routes()
 
-    paths = {route.path for route in app.routes}
+    paths = {route.path for route in app.routes if hasattr(route, "path")}
     assert "/broker-sync/status" in paths
     assert "/broker-sync/snapshot" in paths
 
