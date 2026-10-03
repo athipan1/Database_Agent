@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import broker_sync_repository
+from app.route_registry import mount_router_routes
 from app.routers.broker_sync import create_broker_sync_router
 
 
@@ -68,7 +69,7 @@ def _register_routes():
         def wrap_response(*, data):
             return {"status": "success", "data": data}
 
-    app.include_router(create_broker_sync_router(Runtime(db)))
+    mount_router_routes(app, create_broker_sync_router(Runtime(db)))
     return app, db
 
 
