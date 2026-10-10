@@ -41,6 +41,7 @@ def test_schema_manifest_matches_runtime_identity_and_core_contract():
         "skill_backtest_results",
         "backtest_promotions",
         "backtest_promotion_transitions",
+        "research_evidence",
     }
     assert required.issubset(set(manifest["tables"]))
 

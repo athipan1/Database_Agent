@@ -6,8 +6,8 @@ from typing import Any, Dict
 
 
 SCHEMA_NAME = "database_agent_primary"
-SCHEMA_VERSION = "2026-10-02.1"
-SCHEMA_SHA256 = "cff7a1a015c3c6da8f64b968c31a018b56b81e8386968564e0d70debedf8217f"
+SCHEMA_VERSION = "2026-10-10.1"
+SCHEMA_SHA256 = "87920b286399dad138e6ce2fc37511899d353b39eae181e6b7bca3993377f9a8"
 SOURCE_REPOSITORY = "athipan1/Database_Agent"
 
 

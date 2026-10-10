@@ -24,6 +24,7 @@ from plan_record_routes import create_plan_record_routes
 from policy_review_routes import create_policy_review_routes
 from profit_lifecycle_routes import create_profit_lifecycle_routes
 from shadow_observation_routes import create_shadow_observation_routes
+from research_evidence_routes import create_research_evidence_routes
 
 
 def create_application(runtime: Any) -> FastAPI:
@@ -85,6 +86,12 @@ def create_application(runtime: Any) -> FastAPI:
             runtime.db,
             runtime.get_api_key,
             runtime.get_correlation_id,
+        ),
+    )
+    mount_router_routes(
+        app,
+        create_research_evidence_routes(
+            runtime.db, runtime.get_api_key, runtime.get_correlation_id,
         ),
     )
     mount_router_routes(
