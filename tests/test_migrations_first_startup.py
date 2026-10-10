@@ -117,6 +117,7 @@ def test_current_schema_skips_all_deployment_ddl(monkeypatch):
         "setup_profit_lifecycle_tables",
         "setup_backtest_tables",
         "setup_backtest_promotion_tables",
+        "setup_research_evidence_table",
         "setup_schema_identity_table",
     ):
         monkeypatch.setattr(migrations, name, must_not_run)
