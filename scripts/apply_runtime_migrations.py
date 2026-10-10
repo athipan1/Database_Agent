@@ -15,6 +15,7 @@ from app.core.config import Settings
 from app.services.database_provider import create_trading_db
 from backtest_promotion_repository import setup_backtest_promotion_tables
 from backtest_repository import setup_backtest_tables
+from research_evidence_repository import setup_research_evidence_table
 from broker_sync_repository import setup_broker_sync_tables
 from execution_job_repository import setup_execution_job_table
 from fill_repository import setup_fill_table
@@ -60,6 +61,7 @@ def apply_runtime_migrations(db) -> bool:
     setup_profit_lifecycle_tables(db)
     setup_backtest_tables(db)
     setup_backtest_promotion_tables(db)
+    setup_research_evidence_table(db)
     db.ensure_price_partitions()
 
     # The identity marker is written last. If any prior migration step fails,
