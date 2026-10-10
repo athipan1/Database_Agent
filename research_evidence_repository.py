@@ -103,6 +103,11 @@ def setup_research_evidence_table(db) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_research_evidence_symbol_time "
                 "ON research_evidence(symbol, created_at DESC)"
             )
+            if db.db_type == "postgres":
+                # Research evidence is never available through public SQL APIs.
+                # The service's DB-owner connection may still access its rows.
+                cursor.execute("ALTER TABLE research_evidence ENABLE ROW LEVEL SECURITY")
+                cursor.execute("REVOKE ALL ON research_evidence FROM PUBLIC")
             conn.commit()
         except Exception:
             conn.rollback()
