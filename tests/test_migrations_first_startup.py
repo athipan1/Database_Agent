@@ -149,6 +149,7 @@ def test_deployment_migration_marks_identity_last(monkeypatch):
         "setup_profit_lifecycle_tables",
         "setup_backtest_tables",
         "setup_backtest_promotion_tables",
+        "setup_research_evidence_table",
     ):
         monkeypatch.setattr(
             migrations,
