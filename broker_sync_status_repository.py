@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from decimal import Decimal
 from typing import Any, Dict, List
 
@@ -272,12 +274,39 @@ def _assignment_map(assignments: List[Dict[str, Any]]) -> Dict[str, str]:
     return result
 
 
+def _approved_unmanaged_symbols(account_id: int) -> set[str]:
+    """Explicit, account-scoped, operator-approved external holdings only.
+
+    Missing configuration never implicitly exempts an unassigned holding.
+    Invalid configuration fails closed rather than widening the exemption.
+    """
+    raw = os.getenv("UNMANAGED_BROKER_POSITION_SYMBOLS_JSON", "").strip()
+    if not raw:
+        return set()
+    try:
+        registry = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Invalid unmanaged broker symbol registry JSON") from exc
+    if not isinstance(registry, dict) or not all(
+        str(key).isdigit() and isinstance(value, list)
+        for key, value in registry.items()
+    ):
+        raise ValueError("Unmanaged broker registry must map account IDs to symbol arrays")
+    names = registry.get(str(account_id), [])
+    if not all(isinstance(name, str) and re.fullmatch(r"[A-Z][A-Z0-9.\\-]{0,14}", name) for name in names):
+        raise ValueError("Unmanaged broker registry contains invalid symbols")
+    if len(names) != len(set(names)):
+        raise ValueError("Unmanaged broker registry contains duplicate symbols")
+    return set(names)
+
+
 def _mismatch_report(
     db_account: Dict[str, Any],
     db_positions: List[Dict[str, Any]],
     db_orders: List[Dict[str, Any]],
     assignments: List[Dict[str, Any]],
     snapshot: Dict[str, Any],
+    unmanaged_symbols: set[str] | None = None,
 ) -> Dict[str, Any]:
     broker_account = snapshot.get("account") or {}
     broker_positions = snapshot.get("positions") or []
@@ -289,6 +318,9 @@ def _mismatch_report(
     db_position_buckets = _bucket_map(db_positions)
     db_order_buckets = _bucket_map(db_orders)
     canonical_buckets = _assignment_map(assignments)
+    unmanaged_symbols = unmanaged_symbols or set()
+    unmanaged_positions = sorted(set(db_position_buckets) & unmanaged_symbols)
+    unmanaged_open_orders = sorted(set(db_order_buckets) & unmanaged_symbols)
 
     mismatches: List[Dict[str, Any]] = []
     if broker_account:
@@ -312,7 +344,8 @@ def _mismatch_report(
         )
 
     unassigned_positions = sorted(
-        symbol for symbol, bucket in db_position_buckets.items() if bucket == "unassigned"
+        symbol for symbol, bucket in db_position_buckets.items()
+        if bucket == "unassigned" and symbol not in unmanaged_symbols
     )
     if unassigned_positions:
         mismatches.append(
@@ -328,6 +361,7 @@ def _mismatch_report(
             str(row.get("symbol") or "").upper()
             for row in db_orders
             if _strategy_bucket(row) == "unassigned" and row.get("symbol")
+            and str(row.get("symbol")).upper() not in unmanaged_symbols
         }
     )
     if unassigned_orders:
@@ -338,6 +372,21 @@ def _mismatch_report(
                 "recommended_action": "configure_strategy_bucket_assignment",
             }
         )
+
+    # External ownership and a strategy assignment are mutually exclusive.
+    # A collision must never turn into an automatic trading authorization.
+    unmanaged_conflicts = sorted(
+        symbol for symbol in unmanaged_symbols
+        if symbol in canonical_buckets
+        or (symbol in db_position_buckets and db_position_buckets[symbol] != "unassigned")
+        or (symbol in db_order_buckets and db_order_buckets[symbol] != "unassigned")
+    )
+    if unmanaged_conflicts:
+        mismatches.append({
+            "field": "unmanaged_strategy_bucket_conflicts",
+            "symbols": unmanaged_conflicts,
+            "recommended_action": "manual_ownership_review",
+        })
 
     assignment_position_mismatches = [
         {
@@ -378,6 +427,9 @@ def _mismatch_report(
     diagnostics = broker_sync_diagnostics(db_account, db_positions, db_orders, snapshot)
     diagnostics["strategy_buckets"] = {
         "canonical_assignments": canonical_buckets,
+        "configured_unmanaged_symbols": sorted(unmanaged_symbols),
+        "unmanaged_positions": unmanaged_positions,
+        "unmanaged_open_orders": unmanaged_open_orders,
         "database_positions": db_position_buckets,
         "database_open_orders": db_order_buckets,
         "unassigned_positions": unassigned_positions,
@@ -403,12 +455,14 @@ def broker_sync_status(db, account_id: int = 1) -> Dict[str, Any]:
             positions = _positions(cursor, db, account_id)
             open_orders = _orders(cursor, db, account_id)
             assignments = _assignments(cursor, db, account_id)
+            unmanaged_symbols = _approved_unmanaged_symbols(account_id)
             mismatch = _mismatch_report(
                 account,
                 positions,
                 open_orders,
                 assignments,
                 snapshot,
+                unmanaged_symbols,
             )
             account_for_exposure = dict(account or {})
             if snapshot.get("account"):
@@ -427,7 +481,24 @@ def broker_sync_status(db, account_id: int = 1) -> Dict[str, Any]:
                         "open_order_count": len(open_orders),
                         "strategy_bucket_assignment_count": len(assignments),
                     },
+                    # Whole-account exposure is retained; strategy-only exposure
+                    # excludes explicitly unmanaged external holdings.
                     "bucket_exposure": _bucket_exposure(positions, account_for_exposure),
+                    "managed_bucket_exposure": _bucket_exposure(
+                        [row for row in positions if str(row.get("symbol") or "").upper() not in unmanaged_symbols],
+                        account_for_exposure,
+                    ),
+                    "unmanaged_exposure": {
+                        "symbols": sorted(
+                            str(row.get("symbol") or "").upper() for row in positions
+                            if str(row.get("symbol") or "").upper() in unmanaged_symbols
+                        ),
+                        "market_value": str(sum(
+                            (_position_value(row) for row in positions
+                             if str(row.get("symbol") or "").upper() in unmanaged_symbols),
+                            Decimal("0"),
+                        ).quantize(Decimal("0.01"))),
+                    },
                     "mismatch": mismatch,
                 }
             )
