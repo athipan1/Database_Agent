@@ -68,3 +68,21 @@ def test_invalid_external_scope_fails_closed(monkeypatch, invalid):
     sync_broker_state(db, broker_state())
     with pytest.raises(ValueError):
         broker_sync_status(db, account_id=1)
+
+
+@pytest.mark.parametrize("snapshot_override", [
+    {"paper": False},
+    {"broker": "OTHER", "paper": True},
+])
+def test_external_scope_requires_verified_alpaca_paper_snapshot(monkeypatch, snapshot_override):
+    monkeypatch.setenv("UNMANAGED_BROKER_POSITION_SYMBOLS_JSON", '{"1":["AGCO"]}')
+    db = SQLiteStatusTestDB()
+    state = _with_external_holding()
+    state.update(snapshot_override)
+    sync_broker_state(db, state)
+    status = broker_sync_status(db, account_id=1)
+    assert status["mismatch"]["is_synced"] is False
+    assert "unassigned_position_buckets" in {
+        row["field"] for row in status["mismatch"]["mismatches"]
+    }
+    assert status["mismatch"]["diagnostics"]["strategy_buckets"]["configured_unmanaged_symbols"] == []
