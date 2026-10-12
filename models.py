@@ -101,7 +101,10 @@ class Position(CustomBaseModel):
     position_id: Optional[int] = None
     account_id: Union[int, str]
     symbol: str
-    quantity: int
+    # Alpaca Paper holdings can be fractional. Use Decimal in the read
+    # contract, matching NUMERIC(18,6) storage and broker reconciliation.
+    # Do not round/truncate quantities when serializing account positions.
+    quantity: Decimal
     average_cost: Decimal
     current_market_price: Optional[Decimal] = None
     market_value: Optional[Decimal] = None

@@ -6,7 +6,7 @@ from decimal import Decimal
 from broker_sync_repository import sync_broker_state
 from position_bucket_repository import setup_position_bucket_columns
 from broker_sync_status_repository import broker_sync_status
-from models import BrokerSyncResult
+from models import BrokerSyncResult, Position, StandardAgentResponse
 
 
 class SQLiteBrokerSyncTestDB:
@@ -213,6 +213,29 @@ def test_sync_broker_state_updates_cash_positions_and_open_orders():
     assert len(orders) == 1
     assert {order["broker_order_id"] for order in orders} == {"stop-adbe"}
     assert {order["status"] for order in orders} == {"placed"}
+
+
+def test_fractional_broker_position_survives_account_response_contract(monkeypatch):
+    """The account positions API must not return HTTP 500 for Paper fractions."""
+    monkeypatch.setenv("STRATEGY_BUCKET_ASSIGNMENTS_JSON", "ADBE=value_rebound")
+    db = SQLiteBrokerSyncTestDB()
+    state = broker_state(open_orders=[])
+    state["positions"][0]["qty"] = "87.716996"
+    state["positions"][0]["market_value"] = "17430.71"
+    sync_broker_state(db, state)
+
+    rows = db.get_positions(1)
+    assert Decimal(str(rows[0]["quantity"])) == Decimal("87.716996")
+    # FastAPI's response_model=StandardAgentResponse[List[Position]] used to
+    # reject this with int_from_float after the broker snapshot had succeeded.
+    envelope = StandardAgentResponse[list[Position]](
+        status="success",
+        timestamp=datetime.now(timezone.utc),
+        data=rows,
+    )
+    assert envelope.data[0].quantity == Decimal("87.716996")
+    serialized = envelope.model_dump(mode="json")
+    assert Decimal(str(serialized["data"][0]["quantity"])) == Decimal("87.716996")
 
 
 def test_sync_broker_state_preserves_existing_position_bucket_when_broker_has_none():
