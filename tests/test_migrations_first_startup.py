@@ -166,3 +166,90 @@ def test_deployment_migration_marks_identity_last(monkeypatch):
     assert db.setup_database_calls == 1
     assert db.partition_calls == 1
     assert events[-1] == "schema_identity"
+
+
+def test_live_postgres_broker_sync_never_runs_schema_ddl(monkeypatch):
+    """Pre-deploy migrations own Postgres DDL; the Paper snapshot cannot rerun it."""
+    from contextlib import contextmanager
+    from decimal import Decimal
+
+    import broker_sync_repository as repository
+
+    class Cursor:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    class Connection:
+        def __init__(self):
+            self.committed = False
+            self.rolled_back = False
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+    class MigratedPostgres:
+        db_type = "postgres"
+        param_style = "%s"
+
+        def __init__(self):
+            self.conn = Connection()
+            self.cursor = Cursor()
+
+        @contextmanager
+        def connection_scope(self):
+            yield self.conn
+
+        def get_cursor(self, conn):
+            assert conn is self.conn
+            return self.cursor
+
+    db = MigratedPostgres()
+    calls = []
+
+    def reject_runtime_ddl(_db):
+        raise AssertionError("Runtime snapshot must never execute migrations")
+
+    monkeypatch.setattr(repository, "setup_broker_sync_tables", reject_runtime_ddl)
+    monkeypatch.setattr(
+        repository, "_ensure_account",
+        lambda cursor, database, account_id, state: Decimal("90000.00"),
+    )
+    monkeypatch.setattr(
+        repository, "_replace_positions",
+        lambda cursor, database, account_id, positions: len(positions),
+    )
+    monkeypatch.setattr(
+        repository, "_sync_open_orders",
+        lambda cursor, database, account_id, orders: len(orders),
+    )
+    monkeypatch.setattr(
+        repository, "_mark_missing_orders",
+        lambda cursor, database, account_id, orders: 0,
+    )
+    monkeypatch.setattr(
+        repository, "_insert_snapshot",
+        lambda cursor, database, account_id, state: calls.append(account_id),
+    )
+
+    result = repository.sync_broker_state(
+        db,
+        {
+            "account_id": 1,
+            "broker": "ALPACA",
+            "paper": True,
+            "positions": [{"symbol": "AGCO", "qty": "87.716996"}],
+            "open_orders": [],
+        },
+    )
+
+    assert result["positions_synced"] == 1
+    assert result["open_orders_synced"] == 0
+    assert db.conn.committed is True
+    assert db.conn.rolled_back is False
+    assert db.cursor.closed is True
+    assert calls == [1]

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException
+from starlette.concurrency import run_in_threadpool
 
 from models import (
     BrokerSyncBody,
@@ -59,7 +60,11 @@ def create_execution_router(runtime: Any) -> APIRouter:
             body.broker,
         )
         try:
-            result = runtime.sync_broker_state(
+            # The broker repository uses synchronous psycopg2. Keep network
+            # latency and database locks off the FastAPI event loop so health
+            # checks remain responsive while sync is running.
+            result = await run_in_threadpool(
+                runtime.sync_broker_state,
                 runtime.db,
                 body.model_dump(mode="json"),
             )
