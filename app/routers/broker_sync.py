@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends
+from starlette.concurrency import run_in_threadpool
 
 from broker_sync_repository import sync_broker_state
 from broker_sync_status_repository import broker_sync_status
@@ -33,7 +34,9 @@ def create_broker_sync_router(runtime: Any) -> APIRouter:
         correlation_id: str = Depends(runtime.get_correlation_id),
     ):
         return runtime.wrap_response(
-            data=broker_sync_status(runtime.db, account_id=account_id)
+            data=await run_in_threadpool(
+                broker_sync_status, runtime.db, account_id=account_id
+            )
         )
 
     @router.post("/broker-sync/snapshot")
@@ -43,7 +46,7 @@ def create_broker_sync_router(runtime: Any) -> APIRouter:
         correlation_id: str = Depends(runtime.get_correlation_id),
     ):
         return runtime.wrap_response(
-            data=sync_broker_state(runtime.db, payload)
+            data=await run_in_threadpool(sync_broker_state, runtime.db, payload)
         )
 
     @router.post("/skills/trade-outcomes")
