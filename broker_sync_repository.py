@@ -377,7 +377,12 @@ def _insert_snapshot(cursor, db, account_id: int, state: Dict[str, Any]) -> None
 
 
 def sync_broker_state(db, broker_state: Dict[str, Any]) -> Dict[str, Any]:
-    setup_broker_sync_tables(db)
+    # PostgreSQL schema is provisioned and verified by migrations-first startup.
+    # Running DDL on every broker snapshot can acquire heavyweight table/trigger
+    # locks and block the live API. SQLite unit fixtures still initialize their
+    # disposable in-memory schema on demand.
+    if db.db_type == "sqlite":
+        setup_broker_sync_tables(db)
     account_id = int(broker_state.get("account_id") or 1)
     synced_at = _now(db)
     positions = broker_state.get("positions") or []
