@@ -455,7 +455,14 @@ def broker_sync_status(db, account_id: int = 1) -> Dict[str, Any]:
             positions = _positions(cursor, db, account_id)
             open_orders = _orders(cursor, db, account_id)
             assignments = _assignments(cursor, db, account_id)
-            unmanaged_symbols = _approved_unmanaged_symbols(account_id)
+            configured_unmanaged_symbols = _approved_unmanaged_symbols(account_id)
+            # No external ownership exemption without a verified Paper
+            # broker snapshot. Missing/unknown/Live provenance fails closed.
+            paper_snapshot = (
+                str(snapshot.get("broker") or "").strip().upper() == "ALPACA"
+                and str(snapshot.get("paper") or "").strip().lower() in {"true", "1"}
+            )
+            unmanaged_symbols = configured_unmanaged_symbols if paper_snapshot else set()
             mismatch = _mismatch_report(
                 account,
                 positions,
